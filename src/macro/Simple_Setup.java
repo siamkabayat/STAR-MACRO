@@ -49,6 +49,9 @@ public class Simple_Setup extends StarMacro {
         // 4. REGION & BOUNDARIES
         setupRegionAndBoundaries(sim, myPart);
 
+        // SOLVER SETUP
+        setupSolverSettings(sim);
+
         // 5. MESH SETUP
         setupMesh(sim, myPart);
 
@@ -146,7 +149,7 @@ public class Simple_Setup extends StarMacro {
     // HELPER: EXTRACT ID
     private int extractIDFromName(String name) {
         String digit = name.replaceAll("\\D+", "");
-        return digit.isEmpty() ? 1: Integer.parseInt(digit);
+        return digit.isEmpty() ? 1 : Integer.parseInt(digit);
     }
 
 
@@ -158,8 +161,8 @@ public class Simple_Setup extends StarMacro {
         createOrGetParameter(sim, "Base_Size", 0.011, "m");
         createOrGetParameter(sim, "Argon_Density", 1.633, "kg/m^3");
         createOrGetParameter(sim, "Argon_Viscosity", 2.23e-5, "Pa-s");
-       // createOrGetParameter(sim, "Inlet_Velocity", 20.0, "m/s");
-       // createOrGetParameter(sim, "Outlet_Pressure", 0.0, "Pa");
+        // createOrGetParameter(sim, "Inlet_Velocity", 20.0, "m/s");
+        // createOrGetParameter(sim, "Outlet_Pressure", 0.0, "Pa");
         createOrGetParameter(sim, "Turbulence_Intensity", 0.04, "");
         createOrGetParameter(sim, "Num_Prism_Layers", 10, "");
         createOrGetParameter(sim, "Prism_Layer_Stretching", 1.15, "");
@@ -172,6 +175,8 @@ public class Simple_Setup extends StarMacro {
 
         //TODO: This must me extracted  from inlet geometry
         //createOrGetParameter(sim, "Hydraulic_Diameter", 0.08, "m");
+
+        createOrGetParameter(sim, "Max_Steps", 500, "");
     }
 
     private void createOrGetParameter(Simulation sim, String name, double value, String unitString) {
@@ -253,7 +258,7 @@ public class Simple_Setup extends StarMacro {
             physics.getInitialConditions().get(KeTurbSpecOption.class).setSelected(KeTurbSpecOption.Type.INTENSITY_LENGTH_SCALE);
 
             ScalarGlobalParameter turbParam = getParamByName(sim, "Turbulence_Intensity");
-            if (turbParam !=null) {
+            if (turbParam != null) {
                 TurbulenceIntensityProfile tiProfile = physics.getInitialConditions().get(TurbulenceIntensityProfile.class);
                 ((ConstantScalarProfileMethod) tiProfile.getMethod()).getQuantity().setDefinition(turbParam);
             }
@@ -330,7 +335,7 @@ public class Simple_Setup extends StarMacro {
             physics.enable(KeLowYplusWallTreatment.class);
 
             // TODO: not sure if this is necessary
-            physics.enable(SolutionInterpolationModel.class);
+            //physics.enable(SolutionInterpolationModel.class);
 
             // CONFIGURE ARGON
             // ------------------------------------------------
@@ -403,7 +408,7 @@ public class Simple_Setup extends StarMacro {
                 String dhName = "Outlet_Hydraulic_Diameter_" + id;
 
                 ScalarGlobalParameter pressParam = getParamByName(sim, pressName);
-                ScalarGlobalParameter dhParam =  getParamByName(sim, dhName);
+                ScalarGlobalParameter dhParam = getParamByName(sim, dhName);
 
                 //ScalarGlobalParameter pressureParam = (ScalarGlobalParameter) sim.get(GlobalParameterManager.class).getObject("Outlet_Pressure");
                 //ScalarGlobalParameter turbParam = (ScalarGlobalParameter) sim.get(GlobalParameterManager.class).getObject("Turbulence_Intensity");
@@ -500,7 +505,7 @@ public class Simple_Setup extends StarMacro {
         AutoMeshOperation meshOp = null;
 
         // "star.bodyfittedmesher.AdvancingLayerAutoMesher"
-        String[] mesherNames = new String[] {
+        String[] mesherNames = new String[]{
                 "star.resurfacer.ResurfacerAutoMesher",
                 "star.dualmesher.DualAutoMesher",
                 "star.prismmesher.PrismAutoMesher"
@@ -520,7 +525,7 @@ public class Simple_Setup extends StarMacro {
         if (meshOp == null) return;
 
         ScalarGlobalParameter baseSizeParam = (ScalarGlobalParameter) sim.get(GlobalParameterManager.class).getObject("Base_Size");
-        if (baseSizeParam !=null) {
+        if (baseSizeParam != null) {
             meshOp.getDefaultValues().get(BaseSize.class).setDefinition(baseSizeParam);
 
             // CONFIGURE PRISM LAYERS
@@ -551,39 +556,67 @@ public class Simple_Setup extends StarMacro {
     // ==========================================================
     // MESH SURFACE CONTROL HELPER
     // ==========================================================
-        private void addControlToAllSurfaces(Simulation sim, AutoMeshOperation meshOp, GeometryPart part) {
-            sim.println("--- Adding Surface Custom Control ---");
+    private void addControlToAllSurfaces(Simulation sim, AutoMeshOperation meshOp, GeometryPart part) {
+        sim.println("--- Adding Surface Custom Control ---");
 
-            Collection<PartSurface> allSurface = part.getPartSurfaces();
+        Collection<PartSurface> allSurface = part.getPartSurfaces();
 
-            // Get custom control manager
-            CustomMeshControlManager controlManager = meshOp.getCustomMeshControls();
+        // Get custom control manager
+        CustomMeshControlManager controlManager = meshOp.getCustomMeshControls();
 
-            SurfaceCustomMeshControl surfControl = null;
+        SurfaceCustomMeshControl surfControl = null;
 
-            // Create or retrieve custom control
-            String controlName = "Control_All_Surfaces";
+        // Create or retrieve custom control
+        String controlName = "Control_All_Surfaces";
 
-            if (controlManager.has(controlName)) {
-                surfControl = (SurfaceCustomMeshControl) controlManager.getObject(controlName);
-                sim.println("Info: Custom control '" + controlName + "' already exists.");
-            } else {
-                surfControl = controlManager.createSurfaceControl();
-                surfControl.setPresentationName(controlName);
+        if (controlManager.has(controlName)) {
+            surfControl = (SurfaceCustomMeshControl) controlManager.getObject(controlName);
+            sim.println("Info: Custom control '" + controlName + "' already exists.");
+        } else {
+            surfControl = controlManager.createSurfaceControl();
+            surfControl.setPresentationName(controlName);
 
-                surfControl.getGeometryObjects().setQuery(null);
-                surfControl.getGeometryObjects().setObjects(allSurface);
+            surfControl.getGeometryObjects().setQuery(null);
+            surfControl.getGeometryObjects().setObjects(allSurface);
 
 
-                sim.println("Created: " + controlName + " (Applied to part: " + part.getPresentationName() + ")");
-            }
-
-            // --- CONFIGURE TARGET SIZE (50% Relative) ---
-            surfControl.getCustomConditions().get(PartsTargetSurfaceSizeOption.class).setSelected(PartsTargetSurfaceSizeOption.Type.CUSTOM);
-            PartsTargetSurfaceSize surfSize = surfControl.getCustomValues().get(PartsTargetSurfaceSize.class);
-            surfSize.getRelativeSizeScalar().setValue(50.0);
-
-            sim.println("   -> Configured Custom Control: " + controlName + " (Target: 50%)");
+            sim.println("Created: " + controlName + " (Applied to part: " + part.getPresentationName() + ")");
         }
 
+        // --- CONFIGURE TARGET SIZE (50% Relative) ---
+        surfControl.getCustomConditions().get(PartsTargetSurfaceSizeOption.class).setSelected(PartsTargetSurfaceSizeOption.Type.CUSTOM);
+        PartsTargetSurfaceSize surfSize = surfControl.getCustomValues().get(PartsTargetSurfaceSize.class);
+        surfSize.getRelativeSizeScalar().setValue(50.0);
+
+        sim.println("   -> Configured Custom Control: " + controlName + " (Target: 50%)");
+    }
+
+    // ==========================================================
+    // SOLVER SETTINGS
+    // ==========================================================
+    private void setupSolverSettings(Simulation sim) {
+        sim.println("--- Setting Solver Parameters ---");
+
+        SolverStoppingCriterionManager stopManager = sim.getSolverStoppingCriterionManager();
+
+        StepStoppingCriterion stepStop = stopManager.createSolverStoppingCriterion(StepStoppingCriterion.class);
+
+        ScalarGlobalParameter maxStepsParameter = getParamByName(sim, "Max_Steps");
+
+        if (maxStepsParameter != null) {
+            double steps = maxStepsParameter.getQuantity().getSIValue();
+            stepStop.getMaximumNumberStepsObject().getQuantity().setValue(steps);
+            sim.println("   -> Created 'Maximum Steps' criterion set to: " + steps);
+        } else {
+            stepStop.getMaximumNumberStepsObject().getQuantity().setValue(1000.0);
+            sim.println("   -> Created 'Maximum Steps' criterion set to default: 1000");
+        }
+
+        if (stopManager.has("Fixed Steps")) {
+            FixedStepsStoppingCriterion fixedSteps = (FixedStepsStoppingCriterion) stopManager.getSolverStoppingCriterion("Fixed Steps");
+            stopManager.removeObjects(fixedSteps);
+            sim.println("   -> Removed default 'Fixed Steps' criterion.");
+        }
+
+    }
 }
