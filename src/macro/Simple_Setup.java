@@ -61,8 +61,16 @@ public class Simple_Setup extends StarMacro {
         addControlToAllSurfaces(sim, meshOp, myPart);
 
         // 7. GENERATE MESH
-        //sim.println("--- Generating Volume Mesh ---");
-        //sim.getMeshPipelineController().generateVolumeMesh();
+        sim.println("--- Generating Volume Mesh ---");
+        try {
+            sim.getMeshPipelineController().generateVolumeMesh();
+        } catch (Exception e) {
+            sim.println("Mesh generation failed. stopping.");
+            return;
+        }
+
+        // RUN SOLVER
+        runSolver(sim);
 
         sim.println("--- Automation Complete ---");
     }
@@ -75,16 +83,16 @@ public class Simple_Setup extends StarMacro {
 
         // Define the KNOWN values in advance
         // The key must match the pattern: Inlet_Velocity_ID or Outlet_Pressure_ID
-        configMap.put("Inlet_Velocity_1", 20.0); // value for inlet 1
+        configMap.put("Inlet_Velocity_1", 3.8); // value for inlet 1
         configMap.put("Inlet_Velocity_2", 10.0); // value for inlet 2
 
         configMap.put("Outlet_Pressure_1", 0.0); // value for outlet 1
         configMap.put("Outlet_Pressure_2", 0.0); // value for outlet 2
 
-        configMap.put("Inlet_Hydraulic_Diameter_1", 0.1);
+        configMap.put("Inlet_Hydraulic_Diameter_1", 0.08);
         configMap.put("Inlet_Hydraulic_Diameter_2", 0.05);
 
-        configMap.put("Outlet_Hydraulic_Diameter_1", 0.1);
+        configMap.put("Outlet_Hydraulic_Diameter_1", 0.08);
         configMap.put("Outlet_Hydraulic_Diameter_2", 0.05);
     }
 
@@ -141,7 +149,6 @@ public class Simple_Setup extends StarMacro {
                 double dhVal = configMap.getOrDefault(dhKey, 0.08);
                 createOrGetParameter(sim, dhKey, dhVal, "m");
             }
-
         }
 
     }
@@ -152,13 +159,12 @@ public class Simple_Setup extends StarMacro {
         return digit.isEmpty() ? 1 : Integer.parseInt(digit);
     }
 
-
     // ----------------------------------------------------------
     // HELPER: PARAMETER
     // ----------------------------------------------------------
     private void createGlobalParameters(Simulation sim) {
 
-        createOrGetParameter(sim, "Base_Size", 0.011, "m");
+        createOrGetParameter(sim, "Base_Size", 0.1, "m");
         createOrGetParameter(sim, "Argon_Density", 1.633, "kg/m^3");
         createOrGetParameter(sim, "Argon_Viscosity", 2.23e-5, "Pa-s");
         // createOrGetParameter(sim, "Inlet_Velocity", 20.0, "m/s");
@@ -173,10 +179,10 @@ public class Simple_Setup extends StarMacro {
         createOrGetParameter(sim, "Initial_Pressure", 0.0, "Pa");
         createOrGetParameter(sim, "Initial_Turbulence_Length_Scale", 0.01, "m");
 
-        //TODO: This must me extracted  from inlet geometry
+        //TODO: This must be extracted  from inlet geometry
         //createOrGetParameter(sim, "Hydraulic_Diameter", 0.08, "m");
 
-        createOrGetParameter(sim, "Max_Steps", 500, "");
+        createOrGetParameter(sim, "Max_Steps", 10, "");
     }
 
     private void createOrGetParameter(Simulation sim, String name, double value, String unitString) {
@@ -598,8 +604,15 @@ public class Simple_Setup extends StarMacro {
         sim.println("--- Setting Solver Parameters ---");
 
         SolverStoppingCriterionManager stopManager = sim.getSolverStoppingCriterionManager();
+        StepStoppingCriterion stepStop;
 
-        StepStoppingCriterion stepStop = stopManager.createSolverStoppingCriterion(StepStoppingCriterion.class);
+        if (stopManager.has("Maximum Steps")) {
+            stepStop = (StepStoppingCriterion) stopManager.getSolverStoppingCriterion("Maximum Steps");
+            sim.println("   -> Found existing 'Maximum Steps' criterion.");
+        } else {
+            stepStop = stopManager.create("star.common.StepStoppingCriterion");
+            sim.println("   -> Created new 'Maximum Steps' criterion.");
+        }
 
         ScalarGlobalParameter maxStepsParameter = getParamByName(sim, "Max_Steps");
 
@@ -617,6 +630,22 @@ public class Simple_Setup extends StarMacro {
             stopManager.removeObjects(fixedSteps);
             sim.println("   -> Removed default 'Fixed Steps' criterion.");
         }
+    }
 
+    // ==========================================================
+    // SOLVER RUN
+    // ==========================================================
+    private void runSolver(Simulation sim) {
+        sim.println("--- Initializing Solution ---");
+
+        sim.getSolution().initializeSolution();
+
+        sim.println("--- Starting Solver ---");
+        try {
+            sim.getSimulationIterator().run();
+            sim.println("--- Solver Finished ---");
+        } catch (Exception e) {
+            sim.println("Error during calculation: " + e.getMessage());
+        }
     }
 }
