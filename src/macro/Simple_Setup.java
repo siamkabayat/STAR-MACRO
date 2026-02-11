@@ -1,5 +1,9 @@
 package macro;
 
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileReader;
+import java.io.IOException;
 import java.util.*;
 
 import star.base.neo.StringVector;
@@ -27,8 +31,6 @@ public class Simple_Setup extends StarMacro {
         Simulation sim = getActiveSimulation();
         sim.println("--- Starting Automation ---");
 
-        // 0. [USER INPUT] ENTER YOUR KNOWN VALUES HERE
-        configureInputs(sim);
 
         // 1. PARAMETERS
         createGlobalParameters(sim);
@@ -75,26 +77,6 @@ public class Simple_Setup extends StarMacro {
         sim.println("--- Automation Complete ---");
     }
 
-    // ==========================================================
-    // USER CONFIGURATION
-    // ==========================================================
-    private void configureInputs(Simulation sim) {
-        sim.println("--- Loading User Configuration ---");
-
-        // Define the KNOWN values in advance
-        // The key must match the pattern: Inlet_Velocity_ID or Outlet_Pressure_ID
-        configMap.put("Inlet_Velocity_1", 3.8); // value for inlet 1
-        configMap.put("Inlet_Velocity_2", 10.0); // value for inlet 2
-
-        configMap.put("Outlet_Pressure_1", 0.0); // value for outlet 1
-        configMap.put("Outlet_Pressure_2", 0.0); // value for outlet 2
-
-        configMap.put("Inlet_Hydraulic_Diameter_1", 0.08);
-        configMap.put("Inlet_Hydraulic_Diameter_2", 0.05);
-
-        configMap.put("Outlet_Hydraulic_Diameter_1", 0.08);
-        configMap.put("Outlet_Hydraulic_Diameter_2", 0.05);
-    }
 
     // ==========================================================
     // DYNAMIC PARAMETER CREATION
@@ -120,15 +102,19 @@ public class Simple_Setup extends StarMacro {
                     sim.println("   -> Matched " + surf.getPresentationName() + " with configured value: " + userValue);
                 } else {
                     // forgot to define this ID
-                    //TODO: this is not safe! needs better handling.
-                    sim.println("   WARNING: Found " + name + " (ID:" + id + ") but no value defined in configureInputs()!");
-                    sim.println("            Using safety default: 1.0 m/s");
-                    createOrGetParameter(sim, key, 1.0, "m/s");
+                    // CRASH: Geometry exists, but Input File is missing the line!
+                    sim.println("ERROR: Missing parameter for surface: " + surf.getPresentationName());
+                    throw new RuntimeException("Input File Missing: " + key);
                 }
 
-                // TODO: handle InletHydraulic Diameter with the same logic
-                double dhVal = configMap.getOrDefault(dhKey, 0.08);
-                createOrGetParameter(sim, dhKey, dhVal, "m");
+                if (configMap.containsKey(dhKey)) {
+                    double val = configMap.get(dhKey);
+                    createOrGetParameter(sim, dhKey, val, "m");
+                } else {
+                    // CRASH: User forgot the diameter
+                    sim.println("ERROR: Missing hydraulic diameter for: " + surf.getPresentationName());
+                    throw new RuntimeException("Input File Missing: " + dhKey);
+                }
 
             } else if (name.contains("outlet") && !name.contains("wall")) {
                 int id = extractIDFromName(name);
@@ -140,14 +126,19 @@ public class Simple_Setup extends StarMacro {
                     createOrGetParameter(sim, key, userValue, "Pa");
                     sim.println("   -> Matched " + name + " with configured value: " + userValue);
                 } else {
-                    //TODO: this is not safe! needs better handling.
-                    sim.println("   WARNING: Found " + name + " (ID:" + id + ") but no value defined!");
-                    createOrGetParameter(sim, key, 0.0, "Pa");
+                    // CRASH
+                    sim.println("ERROR: Missing parameter for surface: " + surf.getPresentationName());
+                    throw new RuntimeException("Input File Missing: " + key);
                 }
 
-                // TODO: handle Outlet Hydraulic Diameter with the same logic
-                double dhVal = configMap.getOrDefault(dhKey, 0.08);
-                createOrGetParameter(sim, dhKey, dhVal, "m");
+                if (configMap.containsKey(dhKey)) {
+                    double val = configMap.get(dhKey);
+                    createOrGetParameter(sim, dhKey, val, "m");
+                } else {
+                    // CRASH
+                    sim.println("ERROR: Missing hydraulic diameter for: " + surf.getPresentationName());
+                    throw new RuntimeException("Input File Missing: " + dhKey);
+                }
             }
         }
 
@@ -164,31 +155,43 @@ public class Simple_Setup extends StarMacro {
     // ----------------------------------------------------------
     private void createGlobalParameters(Simulation sim) {
 
-        createOrGetParameter(sim, "Base_Size", 0.1, "m");
-        createOrGetParameter(sim, "Argon_Density", 1.633, "kg/m^3");
-        createOrGetParameter(sim, "Argon_Viscosity", 2.23e-5, "Pa-s");
-        // createOrGetParameter(sim, "Inlet_Velocity", 20.0, "m/s");
-        // createOrGetParameter(sim, "Outlet_Pressure", 0.0, "Pa");
-        createOrGetParameter(sim, "Turbulence_Intensity", 0.04, "");
-        createOrGetParameter(sim, "Num_Prism_Layers", 10, "");
-        createOrGetParameter(sim, "Prism_Layer_Stretching", 1.15, "");
-        createOrGetParameter(sim, "Prism_Layer_Thickness", 0.006, "m");
-        createOrGetParameter(sim, "Mesh_Volume_Growth_Rate", 1.0, "");
-
-        // Parameters for initial conditions
-        createOrGetParameter(sim, "Initial_Pressure", 0.0, "Pa");
-        createOrGetParameter(sim, "Initial_Turbulence_Length_Scale", 0.01, "m");
+        // Call the file reader FIRST
+        readAndCreateParameters(sim);
 
         //TODO: This must be extracted  from inlet geometry
         //createOrGetParameter(sim, "Hydraulic_Diameter", 0.08, "m");
-
-        createOrGetParameter(sim, "Max_Steps", 10, "");
     }
 
     private void createOrGetParameter(Simulation sim, String name, double value, String unitString) {
         GlobalParameterManager gpm = sim.get(GlobalParameterManager.class);
         ScalarGlobalParameter param;
 
+        // ----------------------------------------------------------------
+        // 1. PRE-VALIDATION: Check if the unit exists BEFORE creating anything
+        // ----------------------------------------------------------------
+        Units foundUnit = null;
+
+        if (unitString != null && !unitString.isEmpty()) {
+            for (Units u : sim.getUnitsManager().getObjects()) {
+                if (u.getPresentationName().equals(unitString)) {
+                    foundUnit = u;
+                    break;
+                }
+            }
+
+            // If user gave a unit string (e.g. "m/ss") but we found nothing...
+            if (foundUnit == null) {
+                sim.println("ERROR: Input validation failed.");
+                sim.println("       The unit '" + unitString + "' for parameter '" + name + "' does not exist.");
+                sim.println("       Aborting creation to prevent corrupt parameters.");
+                // CRASH HERE - Nothing has been created yet!
+                throw new RuntimeException("Invalid Unit: " + unitString);
+            }
+        }
+
+        // ----------------------------------------------------------------
+        // 2. SAFE EXECUTION: Now we know the unit is valid (or null)
+        // ----------------------------------------------------------------
         if (gpm.has(name)) {
             param = (ScalarGlobalParameter) gpm.getObject(name);
             sim.println("Updated: " + name);
@@ -197,24 +200,14 @@ public class Simple_Setup extends StarMacro {
             sim.println("Created: " + name);
         }
 
-        if (unitString != null && !unitString.isEmpty()) {
-            Units foundUnit = null;
-            for (Units u : sim.getUnitsManager().getObjects()) {
-                if (u.getPresentationName().equals(unitString)) {
-                    foundUnit = u;
-                    break;
-                }
-            }
-
-            if (foundUnit != null) {
-                param.setDimensions(foundUnit.getDimensions());
-                param.getQuantity().setUnits(foundUnit);
-                param.getQuantity().setValueAndUnits(value, foundUnit);
-            } else {
-                param.getQuantity().setValue(value);
-            }
+        // 3. APPLY SETTINGS
+        if (foundUnit != null) {
+            // We already found it in step 1, so just apply it
+            param.setDimensions(foundUnit.getDimensions());
+            param.getQuantity().setUnits(foundUnit);
+            param.getQuantity().setValueAndUnits(value, foundUnit);
         } else {
-            // Case: Explicitly Dimensionless
+            // Dimensionless case
             param.getQuantity().setValue(value);
         }
     }
@@ -610,7 +603,7 @@ public class Simple_Setup extends StarMacro {
             stepStop = (StepStoppingCriterion) stopManager.getSolverStoppingCriterion("Maximum Steps");
             sim.println("   -> Found existing 'Maximum Steps' criterion.");
         } else {
-            stepStop = stopManager.create("star.common.StepStoppingCriterion");
+            stepStop = (StepStoppingCriterion) stopManager.create("star.common.StepStoppingCriterion");
             sim.println("   -> Created new 'Maximum Steps' criterion.");
         }
 
@@ -646,6 +639,65 @@ public class Simple_Setup extends StarMacro {
             sim.println("--- Solver Finished ---");
         } catch (Exception e) {
             sim.println("Error during calculation: " + e.getMessage());
+        }
+    }
+
+    // ==========================================================
+    // READ AND CREATE PARAMETERS FROM FILE
+    // ==========================================================
+    private void readAndCreateParameters(Simulation sim) {
+        sim.println("--- Reading Input File & Creating Parameters ---");
+
+        File file = new File(sim.getSessionDir(), "input.txt");
+        if (!file.exists()) {
+            sim.println("   Warning: 'input.txt' not found. Using defaults.");
+            return;
+        }
+
+        try (BufferedReader br = new BufferedReader(new FileReader(file))) {
+            String line;
+            while ((line = br.readLine()) != null) {
+                String cleanLine = line.trim();
+                if (cleanLine.isEmpty() || cleanLine.startsWith("#")) continue;
+
+                String[] parts = cleanLine.split("=");
+
+                if (parts.length == 2) {
+                    String key = parts[0].trim();
+                    String rawValue = parts[1].split("#")[0].trim(); // e.g., "20.0 m/s" or "500"
+
+                    double value = 0.0;
+                    String unit = ""; // Default to dimensionless
+
+                    // CHECK: Does the value part contain a space? (Implies units)
+                    // e.g., "20.0 m/s" -> Split into ["20.0", "m/s"]
+                    String[] valTokens = rawValue.split("\\s+"); // Split by whitespace
+
+                    try {
+                        if (valTokens.length >= 2) {
+                            // Case: "20.0 m/s"
+                            value = Double.parseDouble(valTokens[0]);
+                            unit = valTokens[1];
+                        } else {
+                            // Case: "500" or "0.05" (No unit found)
+                            value = Double.parseDouble(rawValue);
+                            unit = "";
+                        }
+
+                        // Create with the specific unit found in the file
+                        createOrGetParameter(sim, key, value, unit);
+                        configMap.put(key, value);
+
+                        String logUnit = (unit.isEmpty()) ? "[-]" : "[" + unit + "]";
+                        sim.println("   -> Loaded: " + key + " = " + value + " " + logUnit);
+
+                    } catch (NumberFormatException e) {
+                        sim.println("   -> Skipped invalid number: " + rawValue);
+                    }
+                }
+            }
+        } catch (IOException e) {
+            sim.println("   Error reading file: " + e.getMessage());
         }
     }
 }
