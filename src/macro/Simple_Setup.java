@@ -1,16 +1,14 @@
 package macro;
 
-import java.io.BufferedReader;
-import java.io.File;
-import java.io.FileReader;
-import java.io.IOException;
+import java.io.*;
 import java.util.*;
 
+import star.base.neo.DoubleVector;
+import star.base.neo.NamedObject;
 import star.base.neo.StringVector;
 import star.cadmodeler.*;
 import star.common.*;
 import star.flow.*;
-import star.mapping.SolutionInterpolationModel;
 import star.material.*;
 import star.meshing.*;
 import star.metrics.ThreeDimensionalModel;
@@ -20,6 +18,7 @@ import star.prismmesher.PrismThickness;
 import star.turbulence.*;
 import star.coupledflow.CoupledFlowModel;
 import star.keturb.*;
+import star.vis.PlaneSection;
 
 public class Simple_Setup extends StarMacro {
 
@@ -74,6 +73,13 @@ public class Simple_Setup extends StarMacro {
         // RUN SOLVER
         runSolver(sim);
 
+        // CREATE PLANES
+        try {
+            setupSectionPlanes(sim);
+        } catch (FileNotFoundException e) {
+            sim.println("Warning: Could not create planes (File not found).");
+        }
+
         sim.println("--- Automation Complete ---");
     }
 
@@ -98,7 +104,7 @@ public class Simple_Setup extends StarMacro {
                 // CHECK: Do we have a pre-known value for this ID?
                 if (configMap.containsKey(key)) {
                     double userValue = configMap.get(key);
-                    createOrGetParameter(sim, key, userValue, "m/s");
+                    createOrUpdateParameter(sim, key, userValue, "m/s");
                     sim.println("   -> Matched " + surf.getPresentationName() + " with configured value: " + userValue);
                 } else {
                     // forgot to define this ID
@@ -109,7 +115,7 @@ public class Simple_Setup extends StarMacro {
 
                 if (configMap.containsKey(dhKey)) {
                     double val = configMap.get(dhKey);
-                    createOrGetParameter(sim, dhKey, val, "m");
+                    createOrUpdateParameter(sim, dhKey, val, "m");
                 } else {
                     // CRASH: User forgot the diameter
                     sim.println("ERROR: Missing hydraulic diameter for: " + surf.getPresentationName());
@@ -123,7 +129,7 @@ public class Simple_Setup extends StarMacro {
 
                 if (configMap.containsKey(key)) {
                     double userValue = configMap.get(key);
-                    createOrGetParameter(sim, key, userValue, "Pa");
+                    createOrUpdateParameter(sim, key, userValue, "Pa");
                     sim.println("   -> Matched " + name + " with configured value: " + userValue);
                 } else {
                     // CRASH
@@ -133,7 +139,7 @@ public class Simple_Setup extends StarMacro {
 
                 if (configMap.containsKey(dhKey)) {
                     double val = configMap.get(dhKey);
-                    createOrGetParameter(sim, dhKey, val, "m");
+                    createOrUpdateParameter(sim, dhKey, val, "m");
                 } else {
                     // CRASH
                     sim.println("ERROR: Missing hydraulic diameter for: " + surf.getPresentationName());
@@ -162,7 +168,7 @@ public class Simple_Setup extends StarMacro {
         //createOrGetParameter(sim, "Hydraulic_Diameter", 0.08, "m");
     }
 
-    private void createOrGetParameter(Simulation sim, String name, double value, String unitString) {
+    private void createOrUpdateParameter(Simulation sim, String name, double value, String unitString) {
         GlobalParameterManager gpm = sim.get(GlobalParameterManager.class);
         ScalarGlobalParameter param;
 
@@ -643,14 +649,14 @@ public class Simple_Setup extends StarMacro {
     }
 
     // ==========================================================
-    // READ AND CREATE PARAMETERS FROM FILE
+    // 1. READ PARAMETERS (STRICT NAMESPACE: "Param.")
     // ==========================================================
     private void readAndCreateParameters(Simulation sim) {
-        sim.println("--- Reading Input File & Creating Parameters ---");
+        sim.println("--- Reading Input File (Namespace: Param.) ---");
 
         File file = new File(sim.getSessionDir(), "input.txt");
         if (!file.exists()) {
-            sim.println("   Warning: 'input.txt' not found. Using defaults.");
+            sim.println("Error: input.txt not found in session directory.");
             return;
         }
 
@@ -658,46 +664,202 @@ public class Simple_Setup extends StarMacro {
             String line;
             while ((line = br.readLine()) != null) {
                 String cleanLine = line.trim();
+
+                // ---------------------------------------------------------
+                // FILTER 1: Skip Empty Lines & Comments
+                // ---------------------------------------------------------
                 if (cleanLine.isEmpty() || cleanLine.startsWith("#")) continue;
 
+                // ---------------------------------------------------------
+                // FILTER 2: ONLY Process "Param." Lines
+                // ---------------------------------------------------------
+                if (!cleanLine.startsWith("Param.")) {
+                    continue;
+                }
+
+                // ---------------------------------------------------------
+                // PARSING LOGIC
+                // ---------------------------------------------------------
                 String[] parts = cleanLine.split("=");
-
                 if (parts.length == 2) {
-                    String key = parts[0].trim();
-                    String rawValue = parts[1].split("#")[0].trim(); // e.g., "20.0 m/s" or "500"
 
-                    double value = 0.0;
-                    String unit = ""; // Default to dimensionless
+                    // 1. EXTRACT KEY & STRIP PREFIX
+                    // "Param.Inlet_Velocity_1" -> "Inlet_Velocity_1"
+                    String rawKey = parts[0].trim();
+                    String finalKey = rawKey.substring(6); // Remove first 6 chars ("Param.")
 
-                    // CHECK: Does the value part contain a space? (Implies units)
-                    // e.g., "20.0 m/s" -> Split into ["20.0", "m/s"]
-                    String[] valTokens = rawValue.split("\\s+"); // Split by whitespace
+                    // 2. EXTRACT VALUE & REMOVE INLINE COMMENTS
+                    // "25.5 m/s # Comment" -> "25.5 m/s"
+                    String valuePart = parts[1].split("#")[0].trim();
 
                     try {
+                        // 3. SEPARATE VALUE AND UNIT
+                        // Logic: The last chunk after the last space is likely the unit.
+                        // Example: "25.5 m/s" -> Val="25.5", Unit="m/s"
+                        // Example: "0.05"     -> Val="0.05", Unit=""
+
+                        String[] valTokens = valuePart.split("\\s+"); // Split by whitespace
+                        double val;
+                        String unitStr = "";
+
                         if (valTokens.length >= 2) {
-                            // Case: "20.0 m/s"
-                            value = Double.parseDouble(valTokens[0]);
-                            unit = valTokens[1];
+                            // Assumes format "Value Unit"
+                            unitStr = valTokens[valTokens.length - 1]; // Last part is unit
+                            // Join the rest back together (in case value has spaces, rare)
+                            String valStr = valuePart.substring(0, valuePart.lastIndexOf(unitStr)).trim();
+                            val = Double.parseDouble(valStr);
                         } else {
-                            // Case: "500" or "0.05" (No unit found)
-                            value = Double.parseDouble(rawValue);
-                            unit = "";
+                            // Dimensionless scalar
+                            val = Double.parseDouble(valuePart);
                         }
 
-                        // Create with the specific unit found in the file
-                        createOrGetParameter(sim, key, value, unit);
-                        configMap.put(key, value);
+                        // 4. CREATE IN STAR-CCM+
+                        createOrUpdateParameter(sim, finalKey, val, unitStr);
 
-                        String logUnit = (unit.isEmpty()) ? "[-]" : "[" + unit + "]";
-                        sim.println("   -> Loaded: " + key + " = " + value + " " + logUnit);
+                        configMap.put(finalKey, val);
 
-                    } catch (NumberFormatException e) {
-                        sim.println("   -> Skipped invalid number: " + rawValue);
+                    } catch (Exception e) {
+                        sim.println("   Warning: Could not parse line: " + cleanLine);
+                        sim.println("   Reason: " + e.getMessage());
                     }
                 }
             }
         } catch (IOException e) {
-            sim.println("   Error reading file: " + e.getMessage());
+            sim.println("Error reading file: " + e.getMessage());
         }
+    }
+
+    // ==========================================================
+    // DYNAMIC PLANE CREATION
+    // ==========================================================
+    private void setupSectionPlanes(Simulation sim) throws FileNotFoundException {
+        sim.println("--- Creating Planes ---");
+
+        // Map: PlaneName -> Vector
+        Map<String, double[]> origins = new HashMap<>();
+        Map<String, double[]> normals = new HashMap<>();
+
+        File file = new File(sim.getSessionDir(), "input.txt");
+        if (!file.exists()) return;
+
+        try (BufferedReader br = new BufferedReader(new FileReader(file))) {
+            String line;
+
+            while ((line = br.readLine()) != null) {
+                String cleanLine = line.trim();
+
+                //STRICT FILTER: Only read lines starting with "Plane."
+                if (!cleanLine.startsWith("Plane.")) continue;
+
+                String[] parts = cleanLine.split("=");
+                if (parts.length < 2) continue;
+
+                String rawKey = parts[0].trim(); // "Plane.Mid_Section.Origin"
+                String[] keyParts = rawKey.split("\\.");
+
+                if (keyParts.length == 3) {
+                    String name = keyParts[1]; //Mid_Section
+                    String property = keyParts[2]; // origin or normal
+
+                    double[] vec = parseVector(parts[1].split("#")[0].trim());
+
+                    if (vec !=null) {
+                        if (property.equalsIgnoreCase("Origin")) {
+                            origins.put(name, vec);
+                        } else if (property.equalsIgnoreCase("Normal")) {
+                            normals.put(name, vec);
+                        }
+                    }
+                }
+            }
+
+        } catch (IOException e) {
+            sim.println("Error reading plane data: " + e.getMessage());
+            throw new RuntimeException(e);
+        }
+
+        //create Planes
+        for (String name : origins.keySet()) {
+            if (normals.containsKey(name)) {
+                createSinglePlane(sim, name, origins.get(name), normals.get(name));
+            }
+        }
+    }
+
+    // ==========================================================
+    // CREATE SINGLE PLANE
+    // ==========================================================
+    private void createSinglePlane(Simulation sim, String planeName, double[] origin, double[] normal) {
+        sim.println("   -> Configuring Plane: " + planeName);
+
+        // 1. GET UNITS (Needed for the first 3 parameters)
+        // We retrieve the "meter" unit object
+        Units unitM = sim.getUnitsManager().getObject("m");
+
+        // 2. GET PART MANAGER
+        PartManager partManager = sim.getPartManager();
+        PlaneSection plane;
+
+        // 3. CREATE OR UPDATE
+        if (partManager.has(planeName)) {
+            plane = (PlaneSection) partManager.getObject(planeName);
+        } else {
+            // Create Implicit Part (Using your recording's signature)
+            plane = (PlaneSection) partManager.createImplicitPart(
+                    new ArrayList<>(Collections.<NamedObject>emptyList()),
+                    new DoubleVector(new double[] {0.0, 0.0, 1.0}),
+                    new DoubleVector(new double[] {0.0, 0.0, 0.0}),
+                    0, 1, new DoubleVector(new double[] {0.0}),
+                    null
+            );
+            plane.setPresentationName(planeName);
+        }
+
+        // 4. ASSIGN REGION
+        if (sim.getRegionManager().getRegions().isEmpty()) {
+            sim.println("      Error: No Regions found! Plane is empty.");
+            return;
+        }
+        Region region = sim.getRegionManager().getRegions().iterator().next();
+        plane.getInputParts().setObjects(region);
+
+        // 5. SET GEOMETRY
+        // Signature: setCoordinate(UnitX, UnitY, UnitZ, VectorValue)
+
+        // -- Origin --
+        plane.getOriginCoordinate().setCoordinate(
+                unitM, unitM, unitM, // Units for X, Y, Z
+                new DoubleVector(new double[] {origin[0], origin[1], origin[2]}) // The Vector
+        );
+
+        // -- Normal --
+        // Note: Normal vectors are technically dimensionless, but the API often accepts 'm'
+        // or checks the magnitude. Using 'm' is usually safe for direction vectors here.
+        plane.getOrientationCoordinate().setCoordinate(
+                unitM, unitM, unitM,
+                new DoubleVector(new double[] {normal[0], normal[1], normal[2]})
+        );
+
+        sim.println("      -> Applied Geometry: Origin=" + Arrays.toString(origin));
+    }
+
+    private double[] parseVector(String vectorstring) {
+        if (vectorstring == null || vectorstring.isEmpty()) return null;
+
+        try {
+            // Split by comma
+            String[] parts = vectorstring.split(",");
+
+            if (parts.length == 3) {
+                return new double[]{
+                        Double.parseDouble(parts[0]),
+                        Double.parseDouble(parts[1]),
+                        Double.parseDouble(parts[2])
+                };
+            }
+        } catch (RuntimeException e) {
+            throw new RuntimeException(e);
+        }
+        return null;
     }
 }
