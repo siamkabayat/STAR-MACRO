@@ -6,6 +6,7 @@ import java.util.*;
 import star.base.neo.DoubleVector;
 import star.base.neo.NamedObject;
 import star.base.neo.StringVector;
+import star.base.report.*;
 import star.cadmodeler.*;
 import star.common.*;
 import star.flow.*;
@@ -74,12 +75,39 @@ public class Simple_Setup extends StarMacro {
         runSolver(sim);
 
         // CREATE PLANES
+        List<String> analysisPlanes = new ArrayList<>();
+
         try {
-            setupSectionPlanes(sim);
+            analysisPlanes = setupSectionPlanes(sim);
         } catch (FileNotFoundException e) {
             sim.println("Warning: Could not create planes (File not found).");
         }
 
+        // create uniformity index
+        // Loop through every plane created from the input.txt file
+        if (analysisPlanes.isEmpty()) {
+            sim.println("--- No planes defined in input.txt. Skipping uniformity reports. ---");
+        } else {
+            for (String currentPlane : analysisPlanes) {
+                sim.println("--- Generating Indices for Plane: " + currentPlane + " ---");
+
+                createFlowHomogeneityIndexReport(sim, currentPlane);
+
+                String deadCondition = "mag($$Velocity) < 1.0 ? 1.0 : 0.0";
+                createCustomAreaReport(sim, currentPlane, "DeadAreaFraction", deadCondition);
+
+                String highVelCondition = "mag($$Velocity) > 5.0 ? 1.0 : 0.0";
+                createCustomAreaReport(sim, currentPlane, "HighVelocityArea", highVelCondition);
+
+                String safeZoneCondition = "($$Velocity[0] > 1.0) && ($$Velocity[0] < 5.0) ? 1.0 : 0.0";
+                createCustomAreaReport(sim, currentPlane, "SafeVelocityZone", safeZoneCondition);
+
+                createDeltaZIndexReport(sim, currentPlane);
+
+                createTotalPerformanceIndex(sim, currentPlane, 0.30, 0.30, 0.15, 0.15, 0.10);
+            }
+        }
+        
         sim.println("--- Automation Complete ---");
     }
 
@@ -732,15 +760,17 @@ public class Simple_Setup extends StarMacro {
     // ==========================================================
     // DYNAMIC PLANE CREATION
     // ==========================================================
-    private void setupSectionPlanes(Simulation sim) throws FileNotFoundException {
+    private List<String> setupSectionPlanes(Simulation sim) throws FileNotFoundException {
         sim.println("--- Creating Planes ---");
 
         // Map: PlaneName -> Vector
         Map<String, double[]> origins = new HashMap<>();
         Map<String, double[]> normals = new HashMap<>();
 
+        List<String> createdPlanes = new ArrayList<>();
+
         File file = new File(sim.getSessionDir(), "input.txt");
-        if (!file.exists()) return;
+        if (!file.exists()) return createdPlanes;
 
         try (BufferedReader br = new BufferedReader(new FileReader(file))) {
             String line;
@@ -782,8 +812,12 @@ public class Simple_Setup extends StarMacro {
         for (String name : origins.keySet()) {
             if (normals.containsKey(name)) {
                 createSinglePlane(sim, name, origins.get(name), normals.get(name));
+
+                createdPlanes.add(name);
             }
         }
+
+        return createdPlanes;
     }
 
     // ==========================================================
@@ -861,5 +895,287 @@ public class Simple_Setup extends StarMacro {
             throw new RuntimeException(e);
         }
         return null;
+    }
+
+    // ==========================================================
+    // CREATE FLOW HOMOGENEITY (UNIFORMITY INDEX) REPORT
+    // ==========================================================
+    private void createFlowHomogeneityIndexReport(Simulation sim, String surfaceName) {
+        sim.println("--- Setting up Uniformity Report for: " + surfaceName + " ---");
+
+
+
+        PartManager partManager = sim.getPartManager();
+        if (!partManager.has(surfaceName)) {
+            sim.println("   ERROR: Could not find a part named '" + surfaceName + "'. Report skipped.");
+            return;
+        }
+
+        Part surfacePart = (Part) partManager.getObject(surfaceName);
+
+        ReportManager reportManager = sim.getReportManager();
+        String reportName = "Uniformity_" + surfaceName;
+        SurfaceUniformityReport gammaReport;
+
+        if (reportManager.has(reportName)) {
+            gammaReport = (SurfaceUniformityReport) reportManager.getObject(reportName);
+            sim.println("   -> Updating existing report.");
+        } else {
+            gammaReport = reportManager.createReport(SurfaceUniformityReport.class);
+            gammaReport.setPresentationName(reportName);
+            sim.println("   -> Created new Uniformity Index report.");
+        }
+
+        gammaReport.getParts().setObjects(surfacePart);
+
+        FieldFunction velocityFunc = sim.getFieldFunctionManager().getFunction("Velocity");
+        FieldFunction velMagnitude = velocityFunc.getMagnitudeFunction();
+
+        gammaReport.setFieldFunction(velMagnitude);
+
+        sim.println("   -> Success! Report created for " + surfaceName);
+
+        // create a monitor
+        // TODO: creat a plot
+        if (!sim.getMonitorManager().has(reportName + " Monitor")) {
+            gammaReport.createMonitor();
+        }
+
+        sim.println("   -> Success! Monitor created for " + surfaceName);
+    }
+
+    // TODO: remove this method. it is redundant
+    // ==========================================================
+    // CREATE DEAD AREA FRACTION REPORT
+    // ==========================================================
+    private void createDeadAreaReport(Simulation sim, String surfaceName, double velocityThreshold) {
+        sim.println("--- Setting up Dead Area Report for: " + surfaceName + " ---");
+
+        PartManager partManager = sim.getPartManager();
+        if (!partManager.has(surfaceName)) {
+            sim.println("   ERROR: Could not find a part named '" + surfaceName + "'. Report skipped.");
+            return;
+        }
+
+        Part surfacePart = (Part) partManager.getObject(surfaceName);
+
+        String ffName = "DeadZone_Below_" + String.valueOf(velocityThreshold);
+        FieldFunctionManager ffManager = sim.getFieldFunctionManager();
+        UserFieldFunction deadZoneFunc;
+
+        if (ffManager.has(ffName)) {
+            deadZoneFunc = (UserFieldFunction) ffManager.getObject(ffName);
+        } else {
+            deadZoneFunc = ffManager.createFieldFunction();
+            deadZoneFunc.setPresentationName(ffName);
+            deadZoneFunc.setFunctionName(ffName);
+
+            deadZoneFunc.setDefinition("mag($$Velocity) < " + velocityThreshold + "? 1.0 : 0.0");
+        }
+
+        ReportManager reportManager = sim.getReportManager();
+        String reportName = "DeadAreaFraction_" + surfaceName;
+        AreaAverageReport deadAreaReport;
+
+        if (reportManager.has(reportName)) {
+            deadAreaReport = (AreaAverageReport) reportManager.getReport(reportName);
+            sim.println("   -> Updating existing report.");
+        } else {
+            deadAreaReport = reportManager.createReport(AreaAverageReport.class);
+            deadAreaReport.setPresentationName(reportName);
+            sim.println("   -> Created new Dead Area Fraction report.");
+        }
+
+        deadAreaReport.getParts().setObjects(surfacePart);
+        deadAreaReport.setFieldFunction(deadZoneFunc);
+
+        String monitorName = reportName + " Monitor";
+        if (!sim.getMonitorManager().has(monitorName)) {
+            deadAreaReport.createMonitor();
+        }
+
+        sim.println("   -> Success! Dead Area threshold set to < " + velocityThreshold + " m/s");
+    }
+
+    // ==========================================================
+    // CREATE GENERIC AREA FRACTION REPORT
+    // ==========================================================
+    private void createCustomAreaReport(Simulation sim, String surfaceName, String metricName, String definition) {
+        sim.println("--- Setting up " + metricName + " Report for: " + surfaceName + " ---");
+
+        PartManager partManager = sim.getPartManager();
+        if (!partManager.has(surfaceName)) {
+            sim.println("      ERROR: Could not find part '" + surfaceName + "'.");
+            return;
+        }
+
+        Part surfacePart = (Part) partManager.getObject(surfaceName);
+
+        String ffName = metricName + "_Func_" + surfaceName;
+        FieldFunctionManager ffManager = sim.getFieldFunctionManager();
+        UserFieldFunction customAreaFunc;
+
+        if (ffManager.has(ffName)) {
+            customAreaFunc = (UserFieldFunction) ffManager.getObject(ffName);
+        } else {
+            customAreaFunc = ffManager.createFieldFunction();
+            customAreaFunc.setPresentationName(ffName);
+            customAreaFunc.setFunctionName(ffName);
+        }
+
+        customAreaFunc.setDefinition(definition);
+
+        ReportManager reportManager = sim.getReportManager();
+        String reportName = metricName + "_" + surfaceName;
+        AreaAverageReport customAreaReport;
+
+        if (reportManager.has(reportName)) {
+            customAreaReport = (AreaAverageReport) reportManager.getReport(reportName);
+            sim.println("      -> Updating existing report.");
+        } else {
+            customAreaReport = reportManager.createReport(AreaAverageReport.class);
+            customAreaReport.setPresentationName(reportName);
+            sim.println("      -> Created new Area Fraction report.");
+        }
+
+        customAreaReport.getParts().setObjects(surfacePart);
+        customAreaReport.setFieldFunction(customAreaFunc);
+
+        sim.println("      -> Math evaluated: " + definition);
+    }
+
+    // ==========================================================
+    // CREATE DELTA Z INDEX REPORT (|v_z| / |v|)
+    // ==========================================================
+    private void createDeltaZIndexReport(Simulation sim, String surfaceName) {
+        sim.println("--- Setting up Delta Z Index Report for: " + surfaceName + " ---");
+
+        PartManager partManager = sim.getPartManager();
+        if (!partManager.has(surfaceName)) {
+            sim.println("      ERROR: Could not find part '" + surfaceName + "'.");
+            return;
+        }
+
+        Part surfacePart = (Part) partManager.getObject(surfaceName);
+
+        FieldFunctionManager ffManager = sim.getFieldFunctionManager();
+        ReportManager reportManager = sim.getReportManager();
+
+        // Z-Velocity
+        String zVelFuncName = "AbsZVel_" + surfaceName;
+        UserFieldFunction zVelFunc;
+        if (ffManager.has(zVelFuncName)) {
+            zVelFunc = (UserFieldFunction) ffManager.getObject(zVelFuncName);
+        } else {
+            zVelFunc = ffManager.createFieldFunction();
+            zVelFunc.setPresentationName(zVelFuncName);
+            zVelFunc.setFunctionName(zVelFuncName);
+            zVelFunc.setDefinition("abs($$Velocity[2])");
+        }
+
+        // Velocity Magnitude
+        String magVelFuncName = "MagVel_" + surfaceName;
+        UserFieldFunction magVelFunc;
+        if (ffManager.has(magVelFuncName)) {
+            magVelFunc = (UserFieldFunction) ffManager.getObject(magVelFuncName);
+        } else {
+            magVelFunc = ffManager.createFieldFunction();
+            magVelFunc.setPresentationName(magVelFuncName);
+            magVelFunc.setFunctionName(magVelFuncName);
+            magVelFunc.setDefinition("mag($$Velocity)");
+        }
+
+        // Z-Velocity Area Average Report
+        String zVelReportName = "AvgAbsZVel_" + surfaceName;
+        AreaAverageReport zVelReport;
+        if (reportManager.has(zVelReportName)) {
+            zVelReport = (AreaAverageReport) reportManager.getReport(zVelReportName);
+        } else {
+            zVelReport = reportManager.createReport(AreaAverageReport.class);
+            zVelReport.setPresentationName(zVelReportName);
+        }
+        zVelReport.getParts().setObjects(surfacePart);
+        zVelReport.setFieldFunction(zVelFunc);
+
+        // Velocity Magnitude Area Average Report
+        String magVelReportName = "AvgMagVel_" +  surfaceName;
+        AreaAverageReport magVelReport;
+        if (reportManager.has(magVelReportName)) {
+            magVelReport = (AreaAverageReport) reportManager.getReport(magVelReportName);
+        } else {
+            magVelReport = reportManager.createReport(AreaAverageReport.class);
+            magVelReport.setPresentationName(magVelReportName);
+        }
+        magVelReport.getParts().setObjects(surfacePart);
+        magVelReport.setFieldFunction(magVelFunc);
+
+        // Final Delta Z Expression Report
+        String finalReportName = "DeltaZ_Index_" + surfaceName;
+        ExpressionReport deltaZReport;
+        if (reportManager.has(finalReportName)) {
+            deltaZReport = (ExpressionReport) reportManager.getReport(finalReportName);
+            sim.println("   -> Updating existing Delta Z report.");
+        } else {
+            deltaZReport = reportManager.createReport(ExpressionReport.class);
+            deltaZReport.setPresentationName(finalReportName);
+            sim.println("   -> Created new Delta Z Expression report.");
+        }
+
+        String equation = "${" + zVelReportName + "} / ${" + magVelReportName + "}";
+        deltaZReport.setDefinition(equation);
+    }
+
+    private void createTotalPerformanceIndex(Simulation sim, String surfaceName, double wUnif,
+                                            double wSafe, double wDead, double wHigh, double wZVel) {
+        sim.println("--- Setting up Total Performance Report for: " + surfaceName + " ---");
+
+        ReportManager reportManager = sim.getReportManager();
+
+        String unifName = "Uniformity_" + surfaceName;
+        String safeName = "SafeVelocityZone_" + surfaceName;
+        String deadName = "DeadAreaFraction_" + surfaceName;
+        String highName = "HighVelocityArea_" + surfaceName;
+        String deltaZName = "DeltaZ_Index_" + surfaceName;
+
+        String totalReportName = "Total_Performance_" + surfaceName;
+
+        double sum = wUnif + wSafe + wDead + wHigh + wZVel;
+        if (Math.abs(sum - 1.0) > 1.0e-5) {
+            sim.println("      ERROR: The weighting factors sum to " + sum + ", not 1.0!");
+
+            if (reportManager.has(totalReportName)) {
+                ExpressionReport totalReport = (ExpressionReport) reportManager.getReport(totalReportName);
+                totalReport.setPresentationName(totalReportName);
+                totalReport.setDefinition("0.0/0.0");
+            }
+
+            sim.println("      -> Aborting update.");
+            return;
+        }
+
+        ExpressionReport totalReport;
+        if (reportManager.has(totalReportName)) {
+            totalReport = (ExpressionReport) reportManager.getReport(totalReportName);
+            sim.println("   -> Updating existing Total Performance report.");
+        } else {
+            totalReport = reportManager.createReport(ExpressionReport.class);
+            totalReport.setPresentationName(totalReportName);
+            sim.println("   -> Created new Total Performance Expression report.");
+        }
+
+        String equation =
+                "(" + wUnif + " * ${" + unifName + "}) + " +
+                        "(" + wSafe + " * ${" + safeName + "}) + " +
+                        "(" + wDead + " * (1.0 - ${" + deadName + "})) + " +
+                        "(" + wHigh + " * (1.0 - ${" + highName + "})) + " +
+                        "(" + wZVel + " * (1.0 - ${" + deltaZName + "}))";
+
+        totalReport.setDefinition(equation);
+
+        String monitorName = totalReportName + " Monitor";
+        if (!sim.getMonitorManager().has(monitorName)) {
+            totalReport.createMonitor();
+            sim.println("   -> Success! Monitor created for " + totalReportName);
+        }
     }
 }
