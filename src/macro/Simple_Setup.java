@@ -10,6 +10,10 @@ import star.base.report.*;
 import star.cadmodeler.*;
 import star.common.*;
 import star.flow.*;
+import star.kwturb.KOmegaTurbulence;
+import star.kwturb.KwAllYplusWallTreatment;
+import star.kwturb.KwTurbSpecOption;
+import star.kwturb.SstKwTurbModel;
 import star.material.*;
 import star.meshing.*;
 import star.metrics.ThreeDimensionalModel;
@@ -25,6 +29,9 @@ public class Simple_Setup extends StarMacro {
 
     // Global Map to store your "Pre-Known" values
     private Map<String, Double> configMap = new HashMap<>();
+
+    // Store the selected turbulence model (Default to k-epsilon)
+    private String turbulenceModel = "k-epsilon";
 
     @Override
     public void execute() {
@@ -91,7 +98,7 @@ public class Simple_Setup extends StarMacro {
             for (String currentPlane : analysisPlanes) {
                 sim.println("--- Generating Indices for Plane: " + currentPlane + " ---");
 
-                createFlowHomogeneityIndexReport(sim, currentPlane);
+                createVelocityUniformityReport(sim, currentPlane);
 
                 String deadCondition = "mag($$Velocity) < 1.0 ? 1.0 : 0.0";
                 createCustomAreaReport(sim, currentPlane, "DeadAreaFraction", deadCondition);
@@ -288,7 +295,12 @@ public class Simple_Setup extends StarMacro {
 
         // link turbulence
         try {
-            physics.getInitialConditions().get(KeTurbSpecOption.class).setSelected(KeTurbSpecOption.Type.INTENSITY_LENGTH_SCALE);
+            // DYNAMIC SPECIFICATION OPTION
+            if (turbulenceModel.equals("k-omega-sst")) {
+                physics.getInitialConditions().get(KwTurbSpecOption.class).setSelected(KwTurbSpecOption.Type.INTENSITY_LENGTH_SCALE);
+            } else {
+                physics.getInitialConditions().get(KeTurbSpecOption.class).setSelected(KeTurbSpecOption.Type.INTENSITY_LENGTH_SCALE);
+            }
 
             ScalarGlobalParameter turbParam = getParamByName(sim, "Turbulence_Intensity");
             if (turbParam != null) {
@@ -363,9 +375,18 @@ public class Simple_Setup extends StarMacro {
             physics.enable(ConstantDensityModel.class);
             physics.enable(TurbulentModel.class);
             physics.enable(RansTurbulenceModel.class);
-            physics.enable(KEpsilonTurbulence.class);
-            physics.enable(LienKeTurbModel.class);
-            physics.enable(KeLowYplusWallTreatment.class);
+
+            if(turbulenceModel.equals("k-omega-sst")) {
+                physics.enable(KOmegaTurbulence.class);
+                physics.enable(SstKwTurbModel.class);
+                physics.enable(KwAllYplusWallTreatment.class);
+                sim.println("   -> Applied Physics: k-omega SST with all Y+ wall treatment");
+            } else {
+                physics.enable(KEpsilonTurbulence.class);
+                physics.enable(LienKeTurbModel.class);
+                physics.enable(KeLowYplusWallTreatment.class);
+                sim.println("   -> Applied Physics: k-epsilon (Lien Low-Re) with low Y+ wall treatment");
+            }
 
             // TODO: not sure if this is necessary
             //physics.enable(SolutionInterpolationModel.class);
@@ -476,8 +497,11 @@ public class Simple_Setup extends StarMacro {
         }
 
         // configure turbulence
-        // TODO: make it more general! currently it only works for K-Epsilon model
-        boundary.getConditions().get(KeTurbSpecOption.class).setSelected(KeTurbSpecOption.Type.INTENSITY_LENGTH_SCALE);
+        if (turbulenceModel.equals("k-omega-sst")) {
+            boundary.getConditions().get(KwTurbSpecOption.class).setSelected(KwTurbSpecOption.Type.INTENSITY_LENGTH_SCALE);
+        } else {
+            boundary.getConditions().get(KeTurbSpecOption.class).setSelected(KeTurbSpecOption.Type.INTENSITY_LENGTH_SCALE);
+        }
 
         if (turbParam != null) {
             TurbulenceIntensityProfile tiProfile = boundary.getValues().get(TurbulenceIntensityProfile.class);
@@ -509,9 +533,12 @@ public class Simple_Setup extends StarMacro {
             pMethod.getQuantity().setDefinition(pressureParam);
         }
 
-        // configure backflow turbulence
-        // TODO: make it more general! currently it only works for K-Epsilon model
-        boundary.getConditions().get(KeTurbSpecOption.class).setSelected(KeTurbSpecOption.Type.INTENSITY_LENGTH_SCALE);
+        // configure turbulence
+        if (turbulenceModel.equals("k-omega-sst")) {
+            boundary.getConditions().get(KwTurbSpecOption.class).setSelected(KwTurbSpecOption.Type.INTENSITY_LENGTH_SCALE);
+        } else {
+            boundary.getConditions().get(KeTurbSpecOption.class).setSelected(KeTurbSpecOption.Type.INTENSITY_LENGTH_SCALE);
+        }
 
         if (turbParam != null) {
             TurbulenceIntensityProfile tiProfile = boundary.getValues().get(TurbulenceIntensityProfile.class);
@@ -720,6 +747,23 @@ public class Simple_Setup extends StarMacro {
                     // "25.5 m/s # Comment" -> "25.5 m/s"
                     String valuePart = parts[1].split("#")[0].trim();
 
+
+                    // STRICT STRING PARAMETER VALIDATION
+                    if (finalKey.equalsIgnoreCase("Turbulence_Model")) {
+                        String parsedModel =  valuePart.toLowerCase().trim();
+
+                        if (parsedModel.equals("k-epsilon") || parsedModel.equals("k-omega-sst")) {
+                            turbulenceModel = parsedModel;
+                            sim.println("   -> Configured Turbulence Model: " + turbulenceModel);
+                        } else {
+                            sim.println("   -> WARNING: Unknown Turbulence_Model '" + parsedModel + "'.");
+                            sim.println("      Allowed options are 'k-epsilon' or 'k-omega-sst'.");
+                            sim.println("      Defaulting to 'k-epsilon' to prevent solver crash.");
+                            turbulenceModel = "k-epsilon";
+                        }
+                        continue; // Skip the Double parsing logic
+                    }
+
                     try {
                         // 3. SEPARATE VALUE AND UNIT
                         // Logic: The last chunk after the last space is likely the unit.
@@ -900,7 +944,7 @@ public class Simple_Setup extends StarMacro {
     // ==========================================================
     // CREATE FLOW HOMOGENEITY (UNIFORMITY INDEX) REPORT
     // ==========================================================
-    private void createFlowHomogeneityIndexReport(Simulation sim, String surfaceName) {
+    private void createVelocityUniformityReport(Simulation sim, String surfaceName) {
         sim.println("--- Setting up Uniformity Report for: " + surfaceName + " ---");
 
 
