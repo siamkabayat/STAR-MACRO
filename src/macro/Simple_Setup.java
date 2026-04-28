@@ -4,6 +4,7 @@ import java.io.*;
 import java.util.*;
 
 import star.base.neo.DoubleVector;
+import star.base.neo.FJTask;
 import star.base.neo.NamedObject;
 import star.base.neo.StringVector;
 import star.base.report.*;
@@ -23,7 +24,7 @@ import star.prismmesher.PrismThickness;
 import star.turbulence.*;
 import star.coupledflow.CoupledFlowModel;
 import star.keturb.*;
-import star.vis.PlaneSection;
+import star.vis.*;
 
 public class Simple_Setup extends StarMacro {
 
@@ -100,16 +101,20 @@ public class Simple_Setup extends StarMacro {
 
                 createVelocityUniformityReport(sim, currentPlane);
 
-                String deadCondition = "mag($$Velocity) < 1.0 ? 1.0 : 0.0";
+                String deadCondition = "mag($$Velocity) < 0.5 ? 1.0 : 0.0";
                 createCustomAreaReport(sim, currentPlane, "DeadAreaFraction", deadCondition);
+                createMetricScene(sim, currentPlane, "DeadAreaFraction", "DeadAreaFraction_Func_" + currentPlane);
 
-                String highVelCondition = "mag($$Velocity) > 5.0 ? 1.0 : 0.0";
+                String highVelCondition = "mag($$Velocity) > 1.0 ? 1.0 : 0.0";
                 createCustomAreaReport(sim, currentPlane, "HighVelocityArea", highVelCondition);
+                createMetricScene(sim, currentPlane, "High Velocity", "HighVelocityArea_Func_" + currentPlane);
 
-                String safeZoneCondition = "($$Velocity[0] > 1.0) && ($$Velocity[0] < 5.0) ? 1.0 : 0.0";
+                String safeZoneCondition = "($$Velocity[0] > 1.0) && ($$Velocity[0] < 4.0) ? 1.0 : 0.0";
                 createCustomAreaReport(sim, currentPlane, "SafeVelocityZone", safeZoneCondition);
+                createMetricScene(sim, currentPlane, "Safe Zone", "SafeVelocityZone_Func_" + currentPlane);
 
                 createDeltaZIndexReport(sim, currentPlane);
+                createMetricScene(sim, currentPlane, "Vertical Velocity", "AbsZVel_" + currentPlane);
 
                 createTotalPerformanceIndex(sim, currentPlane, 0.30, 0.30, 0.15, 0.15, 0.10);
             }
@@ -988,59 +993,6 @@ public class Simple_Setup extends StarMacro {
         sim.println("   -> Success! Monitor created for " + surfaceName);
     }
 
-    // TODO: remove this method. it is redundant
-    // ==========================================================
-    // CREATE DEAD AREA FRACTION REPORT
-    // ==========================================================
-    private void createDeadAreaReport(Simulation sim, String surfaceName, double velocityThreshold) {
-        sim.println("--- Setting up Dead Area Report for: " + surfaceName + " ---");
-
-        PartManager partManager = sim.getPartManager();
-        if (!partManager.has(surfaceName)) {
-            sim.println("   ERROR: Could not find a part named '" + surfaceName + "'. Report skipped.");
-            return;
-        }
-
-        Part surfacePart = (Part) partManager.getObject(surfaceName);
-
-        String ffName = "DeadZone_Below_" + String.valueOf(velocityThreshold);
-        FieldFunctionManager ffManager = sim.getFieldFunctionManager();
-        UserFieldFunction deadZoneFunc;
-
-        if (ffManager.has(ffName)) {
-            deadZoneFunc = (UserFieldFunction) ffManager.getObject(ffName);
-        } else {
-            deadZoneFunc = ffManager.createFieldFunction();
-            deadZoneFunc.setPresentationName(ffName);
-            deadZoneFunc.setFunctionName(ffName);
-
-            deadZoneFunc.setDefinition("mag($$Velocity) < " + velocityThreshold + "? 1.0 : 0.0");
-        }
-
-        ReportManager reportManager = sim.getReportManager();
-        String reportName = "DeadAreaFraction_" + surfaceName;
-        AreaAverageReport deadAreaReport;
-
-        if (reportManager.has(reportName)) {
-            deadAreaReport = (AreaAverageReport) reportManager.getReport(reportName);
-            sim.println("   -> Updating existing report.");
-        } else {
-            deadAreaReport = reportManager.createReport(AreaAverageReport.class);
-            deadAreaReport.setPresentationName(reportName);
-            sim.println("   -> Created new Dead Area Fraction report.");
-        }
-
-        deadAreaReport.getParts().setObjects(surfacePart);
-        deadAreaReport.setFieldFunction(deadZoneFunc);
-
-        String monitorName = reportName + " Monitor";
-        if (!sim.getMonitorManager().has(monitorName)) {
-            deadAreaReport.createMonitor();
-        }
-
-        sim.println("   -> Success! Dead Area threshold set to < " + velocityThreshold + " m/s");
-    }
-
     // ==========================================================
     // CREATE GENERIC AREA FRACTION REPORT
     // ==========================================================
@@ -1114,7 +1066,7 @@ public class Simple_Setup extends StarMacro {
             zVelFunc = ffManager.createFieldFunction();
             zVelFunc.setPresentationName(zVelFuncName);
             zVelFunc.setFunctionName(zVelFuncName);
-            zVelFunc.setDefinition("abs($$Velocity[2])");
+            zVelFunc.setDefinition("abs($$Velocity[1])");
         }
 
         // Velocity Magnitude
@@ -1221,5 +1173,63 @@ public class Simple_Setup extends StarMacro {
             totalReport.createMonitor();
             sim.println("   -> Success! Monitor created for " + totalReportName);
         }
+    }
+
+    // ==========================================================
+    // CREATE VISUALIZATION SCENES FOR METRICS
+    // ==========================================================
+    private void createMetricScene(Simulation sim, String surfaceName, String metricName, String ffName) {
+        sim.println("--- Building Scene for: " + metricName + " ---");
+
+        if (!sim.getPartManager().has(surfaceName)) {
+            sim.println("   ERROR: Plane '" + surfaceName + "' not found.");
+            return;
+        }
+        PlaneSection planeSection = (PlaneSection) sim.getPartManager().getObject(surfaceName);
+
+        if (!sim.getFieldFunctionManager().has(ffName)) {
+            sim.println("   ERROR: Field function '" + ffName + "' not found.");
+            return;
+        }
+        UserFieldFunction fieldFunction = (UserFieldFunction) sim.getFieldFunctionManager().getFunction(ffName);
+
+        String sceneName = metricName + " on " + surfaceName;
+        SceneManager sceneManager = sim.getSceneManager();
+        Scene scene;
+
+        if (sceneManager.has(sceneName)) {
+            scene = sceneManager.getScene(sceneName);
+        } else {
+            scene = (Scene) sceneManager.createScene("Scalar");
+            scene.setPresentationName(sceneName);
+        }
+
+        scene.resetCamera();
+
+        // Discover the displayer at runtime — don't assume its name
+        ScalarDisplayer scalarDisplayer = null;
+        for (Displayer d : scene.getDisplayerManager().getObjects()) {
+            if (d instanceof ScalarDisplayer) {
+                scalarDisplayer = (ScalarDisplayer) d;
+                sim.println("   -> Found displayer: " + d.getPresentationName());
+                break;
+            }
+        }
+        if (scalarDisplayer == null) {
+            scalarDisplayer = (ScalarDisplayer) scene.getDisplayerManager().createScalarDisplayer("Scalar");
+            sim.println("   -> Created new ScalarDisplayer.");
+        }
+
+        scalarDisplayer.getInputParts().setQuery(null);
+        scalarDisplayer.getInputParts().setObjects(planeSection);
+
+        ScalarDisplayQuantity qty = scalarDisplayer.getScalarDisplayQuantity();
+        qty.setFieldFunction(fieldFunction);
+        qty.setRange(new double[]{0.0, 1.0});
+
+        scene.getSceneUpdate().getHardcopyProperties().setCurrentResolutionWidth(1523);
+        scene.getSceneUpdate().getHardcopyProperties().setCurrentResolutionHeight(528);
+
+        sim.println("   -> Success! Scene configured: " + sceneName);
     }
 }
