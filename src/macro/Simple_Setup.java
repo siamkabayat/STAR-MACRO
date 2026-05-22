@@ -10,11 +10,9 @@ import star.base.neo.StringVector;
 import star.base.report.*;
 import star.cadmodeler.*;
 import star.common.*;
+import star.coupledflow.CoupledImplicitSolver;
 import star.flow.*;
-import star.kwturb.KOmegaTurbulence;
-import star.kwturb.KwAllYplusWallTreatment;
-import star.kwturb.KwTurbSpecOption;
-import star.kwturb.SstKwTurbModel;
+import star.kwturb.*;
 import star.material.*;
 import star.meshing.*;
 import star.metrics.ThreeDimensionalModel;
@@ -82,6 +80,16 @@ public class Simple_Setup extends StarMacro {
         // RUN SOLVER
         runSolver(sim);
 
+        // Turn ON Temporary Storage
+        toggleTemporaryStorage(sim, true);
+
+        // Force exactly 1 final iteration to populate the debugging fields
+        sim.println("--- Stepping 1 final iteration for Temporary Storage ---");
+        sim.getSimulationIterator().step(1);
+
+        // Turn OFF Temporary Storage to protect your RAM if you run more things later
+        //toggleTemporaryStorage(sim, false);
+
         // CREATE PLANES
         List<String> analysisPlanes = new ArrayList<>();
 
@@ -100,21 +108,23 @@ public class Simple_Setup extends StarMacro {
                 sim.println("--- Generating Indices for Plane: " + currentPlane + " ---");
 
                 createVelocityUniformityReport(sim, currentPlane);
+                createUniformityPenaltyScene(sim, currentPlane, 4.0);
 
-                String deadCondition = "mag($$Velocity) < 0.5 ? 1.0 : 0.0";
+                String deadCondition = "(mag($$Velocity) < 0.5 || $$Velocity[0] < 0.0) ? 1.0 : 0.0";
                 createCustomAreaReport(sim, currentPlane, "DeadAreaFraction", deadCondition);
-                createMetricScene(sim, currentPlane, "DeadAreaFraction", "DeadAreaFraction_Func_" + currentPlane);
+                createMetricScene(sim, currentPlane, "DeadAreaFraction", "DeadAreaFraction_Func_" + currentPlane, 0.0, 1.0);
 
-                String highVelCondition = "mag($$Velocity) > 1.0 ? 1.0 : 0.0";
+                String highVelCondition = "mag($$Velocity) > 4.0 ? 1.0 : 0.0";
                 createCustomAreaReport(sim, currentPlane, "HighVelocityArea", highVelCondition);
-                createMetricScene(sim, currentPlane, "High Velocity", "HighVelocityArea_Func_" + currentPlane);
+                createMetricScene(sim, currentPlane, "High Velocity", "HighVelocityArea_Func_" + currentPlane, 0.0 , 1.0);
 
                 String safeZoneCondition = "($$Velocity[0] > 1.0) && ($$Velocity[0] < 4.0) ? 1.0 : 0.0";
                 createCustomAreaReport(sim, currentPlane, "SafeVelocityZone", safeZoneCondition);
-                createMetricScene(sim, currentPlane, "Safe Zone", "SafeVelocityZone_Func_" + currentPlane);
+                createMetricScene(sim, currentPlane, "Safe Zone", "SafeVelocityZone_Func_" + currentPlane, 0.0, 1.0);
 
                 createDeltaZIndexReport(sim, currentPlane);
-                createMetricScene(sim, currentPlane, "Vertical Velocity", "AbsZVel_" + currentPlane);
+                createMetricScene(sim, currentPlane, "Vertical Velocity", "AbsZVel_" + currentPlane, 0.0, 1.0);
+                //createDeltaZPenaltyScene(sim, currentPlane);
 
                 createTotalPerformanceIndex(sim, currentPlane, 0.30, 0.30, 0.15, 0.15, 0.10);
             }
@@ -1066,6 +1076,7 @@ public class Simple_Setup extends StarMacro {
             zVelFunc = ffManager.createFieldFunction();
             zVelFunc.setPresentationName(zVelFuncName);
             zVelFunc.setFunctionName(zVelFuncName);
+            //TODO: the direction of the vertical velocity must be chosen according to the relevant geometry
             zVelFunc.setDefinition("abs($$Velocity[1])");
         }
 
@@ -1178,7 +1189,7 @@ public class Simple_Setup extends StarMacro {
     // ==========================================================
     // CREATE VISUALIZATION SCENES FOR METRICS
     // ==========================================================
-    private void createMetricScene(Simulation sim, String surfaceName, String metricName, String ffName) {
+    private void createMetricScene(Simulation sim, String surfaceName, String metricName, String ffName, double minRange, double maxRange) {
         sim.println("--- Building Scene for: " + metricName + " ---");
 
         if (!sim.getPartManager().has(surfaceName)) {
@@ -1191,7 +1202,7 @@ public class Simple_Setup extends StarMacro {
             sim.println("   ERROR: Field function '" + ffName + "' not found.");
             return;
         }
-        UserFieldFunction fieldFunction = (UserFieldFunction) sim.getFieldFunctionManager().getFunction(ffName);
+        FieldFunction fieldFunction = (FieldFunction) sim.getFieldFunctionManager().getFunction(ffName);
 
         String sceneName = metricName + " on " + surfaceName;
         SceneManager sceneManager = sim.getSceneManager();
@@ -1225,11 +1236,121 @@ public class Simple_Setup extends StarMacro {
 
         ScalarDisplayQuantity qty = scalarDisplayer.getScalarDisplayQuantity();
         qty.setFieldFunction(fieldFunction);
-        qty.setRange(new double[]{0.0, 1.0});
+        qty.setRange(new double[]{minRange, maxRange});
 
         scene.getSceneUpdate().getHardcopyProperties().setCurrentResolutionWidth(1523);
         scene.getSceneUpdate().getHardcopyProperties().setCurrentResolutionHeight(528);
 
         sim.println("   -> Success! Scene configured: " + sceneName);
+    }
+
+    // ==========================================================
+    // VISUALIZE GAMMA INDEX LOCAL PENALTY
+    // ==========================================================
+    private void createUniformityPenaltyScene(Simulation sim, String surfaceName, double maxDeviationRange) {
+        sim.println("--- Setting up Uniformity Penalty Visualization for: " + surfaceName + " ---");
+
+        if (!sim.getPartManager().has(surfaceName)) {
+            sim.println("   ERROR: Plane '" + surfaceName + "' not found.");
+            return;
+        }
+        PlaneSection planeSection = (PlaneSection) sim.getPartManager().getObject(surfaceName);
+
+        // Calculate Average Velocity
+        String avgReportName = "AvgVelocity_" + surfaceName;
+        AreaAverageReport avgVelReport;
+
+        if (sim.getReportManager().has(avgReportName)) {
+            avgVelReport = (AreaAverageReport) sim.getReportManager().getReport(avgReportName);
+        } else {
+            avgVelReport = sim.getReportManager().createReport(star.base.report.AreaAverageReport.class);
+            avgVelReport.setPresentationName(avgReportName);
+        }
+        avgVelReport.getParts().setObjects(planeSection);
+        avgVelReport.setFieldFunction(sim.getFieldFunctionManager().getFunction("Velocity").getMagnitudeFunction());
+
+        // Create the Local Deviation Field Function
+        String devFuncName = "UniformityPenalty_" + surfaceName;
+        UserFieldFunction devFunc;
+
+        if (sim.getFieldFunctionManager().has(devFuncName)) {
+            devFunc = (UserFieldFunction) sim.getFieldFunctionManager().getFunction(devFuncName);
+        } else {
+            devFunc = sim.getFieldFunctionManager().createFieldFunction();
+            devFunc.setPresentationName(devFuncName);
+            devFunc.setFunctionName(devFuncName);
+        }
+        // Formula: | local_velocity - average_velocity |
+        devFunc.setDefinition("abs(mag($$Velocity) - ${" + avgReportName + "})");
+
+        // Generate the Scene using the existing method
+        createMetricScene(sim, surfaceName, "Uniformity Penalty", devFuncName, 0.0, maxDeviationRange);
+    }
+
+    // ==========================================================
+    // VISUALIZE DELTA Z LOCAL PENALTY (NORMALIZED)
+    // ==========================================================
+    //TODO: check if this method is appropriate
+    private void createDeltaZPenaltyScene(Simulation sim, String surfaceName) {
+        sim.println("--- Setting up Delta Z Penalty Visualization for: " + surfaceName + " ---");
+
+        // 1. Check if the average velocity report exists (Created by your previous method)
+        String avgMagReportName = "AvgMagVel_" + surfaceName;
+        if (!sim.getReportManager().has(avgMagReportName)) {
+            sim.println("   ERROR: You must run createDeltaZIndexReport first!");
+            return;
+        }
+
+        // 2. Create the Local Normalized Field Function
+        String penaltyFuncName = "DeltaZ_Penalty_" + surfaceName;
+        star.common.UserFieldFunction penaltyFunc;
+
+        if (sim.getFieldFunctionManager().has(penaltyFuncName)) {
+            penaltyFunc = (star.common.UserFieldFunction) sim.getFieldFunctionManager().getFunction(penaltyFuncName);
+        } else {
+            penaltyFunc = sim.getFieldFunctionManager().createFieldFunction();
+            penaltyFunc.setPresentationName(penaltyFuncName);
+            penaltyFunc.setFunctionName(penaltyFuncName);
+        }
+
+        // The Formula: |v_z| / v_avg
+        // Note: Change $$Velocity[1] to $$Velocity[2] if your vertical axis is Z instead of Y!
+        penaltyFunc.setDefinition("abs($$Velocity[1]) / ${" + avgMagReportName + "}");
+
+        // 3. Generate the Scene using your master method
+        // Because it is normalized, 0.0 is perfect flow, and 1.0 means 100% of the local flow is vertical!
+        createMetricScene(sim, surfaceName, "Vertical Flow Fraction", penaltyFuncName, 0.0, 1.0);
+    }
+
+    // ==========================================================
+    // HELPER: DYNAMIC TEMPORARY STORAGE TOGGLE
+    // ==========================================================
+    private void toggleTemporaryStorage(Simulation sim, boolean state) {
+        sim.println("--- Setting Temporary Storage Retain to: " + state + " ---");
+
+        // Loop through the solvers currently loaded by your input file
+        for (Solver solver : sim.getSolverManager().getObjects()) {
+
+            // Coupled Implicit Solver
+            if (solver instanceof CoupledImplicitSolver) {
+                CoupledImplicitSolver coupledSolver = (CoupledImplicitSolver) solver;
+                coupledSolver.setLeaveTemporaryStorage(state);
+                sim.println("   -> Coupled Implicit: Temporary Storage Retain set to " + state);
+            }
+
+            // K-Epsilon Turbulence Solver
+            else if (solver instanceof star.keturb.KeTurbSolver) {
+                star.keturb.KeTurbSolver kEpsSolver = (KeTurbSolver) solver;
+                kEpsSolver.setLeaveTemporaryStorage(state);
+                sim.println("   -> K-Epsilon Model Detected: Temporary Storage Retain set to " + state);
+            }
+
+            // K-Omega Turbulence Solver
+            else if (solver instanceof KwTurbSolver) {
+                KwTurbSolver kOmegaSolver = (KwTurbSolver) solver;
+                kOmegaSolver.setLeaveTemporaryStorage(state);
+                sim.println("   -> K-Omega Model Detected: Temporary Storage Retain set to " + state);
+            }
+        }
     }
 }
