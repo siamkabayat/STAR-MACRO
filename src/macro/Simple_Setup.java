@@ -222,32 +222,7 @@ public class Simple_Setup extends StarMacro {
         GlobalParameterManager gpm = sim.get(GlobalParameterManager.class);
         ScalarGlobalParameter param;
 
-        // ----------------------------------------------------------------
-        // 1. PRE-VALIDATION: Check if the unit exists BEFORE creating anything
-        // ----------------------------------------------------------------
-        Units foundUnit = null;
-
-        if (unitString != null && !unitString.isEmpty()) {
-            for (Units u : sim.getUnitsManager().getObjects()) {
-                if (u.getPresentationName().equals(unitString)) {
-                    foundUnit = u;
-                    break;
-                }
-            }
-
-            // If user gave a unit string (e.g. "m/ss") but we found nothing...
-            if (foundUnit == null) {
-                sim.println("ERROR: Input validation failed.");
-                sim.println("       The unit '" + unitString + "' for parameter '" + name + "' does not exist.");
-                sim.println("       Aborting creation to prevent corrupt parameters.");
-                // CRASH HERE - Nothing has been created yet!
-                throw new RuntimeException("Invalid Unit: " + unitString);
-            }
-        }
-
-        // ----------------------------------------------------------------
-        // 2. SAFE EXECUTION: Now we know the unit is valid (or null)
-        // ----------------------------------------------------------------
+        // 1. Retrieve or Create the Parameter
         if (gpm.has(name)) {
             param = (ScalarGlobalParameter) gpm.getObject(name);
             sim.println("Updated: " + name);
@@ -256,14 +231,49 @@ public class Simple_Setup extends StarMacro {
             sim.println("Created: " + name);
         }
 
-        // 3. APPLY SETTINGS
-        if (foundUnit != null) {
-            // We already found it in step 1, so just apply it
-            param.setDimensions(foundUnit.getDimensions());
-            param.getQuantity().setUnits(foundUnit);
-            param.getQuantity().setValueAndUnits(value, foundUnit);
+        // 2. Map the String to Explicit Physical Dimensions
+        Dimensions dims;
+        boolean isDimensionless = false;
+
+        if (unitString == null || unitString.isEmpty()) {
+            dims = Dimensions.Builder().build(); // Dimensionless
+            isDimensionless = true;
         } else {
-            // Dimensionless case
+            switch (unitString) {
+                case "m/s": // Velocity: Length / Time
+                    dims = Dimensions.Builder().length(1).time(-1).build();
+                    break;
+                case "m": // Length
+                    dims = Dimensions.Builder().length(1).build();
+                    break;
+                case "Pa": // Pressure: kg / (m * s^2)
+                    dims = Dimensions.Builder().mass(1).length(-1).time(-2).build();
+                    break;
+                case "kg/m^3": // Density
+                    dims = Dimensions.Builder().mass(1).length(-3).build();
+                    break;
+                case "Pa-s": // Dynamic Viscosity: kg / (m * s)
+                    dims = Dimensions.Builder().mass(1).length(-1).time(-1).build();
+                    break;
+                default:
+                    sim.println("Warning: Unmapped unit '" + unitString + "'. Defaulting to Dimensionless.");
+                    dims = Dimensions.Builder().build();
+                    isDimensionless = true;
+                    break;
+            }
+        }
+
+        // 3. Apply the Structural Dimensions to the Parameter
+        param.setDimensions(dims);
+
+        // 4. Safely set the numerical value
+        if (!isDimensionless) {
+            // This asks STAR-CCM+ for the correct internal unit object for the dimensions we just built
+            Units preferredUnit = sim.getUnitsManager().getPreferredUnits(dims);
+            param.getQuantity().setUnits(preferredUnit);
+            param.getQuantity().setValueAndUnits(value, preferredUnit);
+        } else {
+            // Dimensionless assignment (e.g., Turbulence Intensity, Growth Rate)
             param.getQuantity().setValue(value);
         }
     }
