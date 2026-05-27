@@ -404,8 +404,8 @@ public class Simple_Setup extends StarMacro {
             if(turbulenceModel.equals("k-omega-sst")) {
                 physics.enable(KOmegaTurbulence.class);
                 physics.enable(SstKwTurbModel.class);
-                physics.enable(KwAllYplusWallTreatment.class);
-                sim.println("   -> Applied Physics: k-omega SST with all Y+ wall treatment");
+                physics.enable(KwLowYplusWallTreatment.class);
+                sim.println("   -> Applied Physics: k-omega SST with low Y+ wall treatment");
             } else {
                 physics.enable(KEpsilonTurbulence.class);
                 physics.enable(LienKeTurbModel.class);
@@ -592,6 +592,7 @@ public class Simple_Setup extends StarMacro {
         // "star.bodyfittedmesher.AdvancingLayerAutoMesher"
         String[] mesherNames = new String[]{
                 "star.resurfacer.ResurfacerAutoMesher",
+                "star.resurfacer.AutomaticSurfaceRepairAutoMesher",
                 "star.dualmesher.DualAutoMesher",
                 "star.prismmesher.PrismAutoMesher"
         };
