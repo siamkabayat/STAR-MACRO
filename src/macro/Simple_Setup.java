@@ -41,6 +41,9 @@ public class Simple_Setup extends StarMacro {
         // 1. PARAMETERS
         createGlobalParameters(sim);
 
+        // 1.1 GEOMETRY MODIFICATION (This updates the CAD and rebuilds it)
+        updateCADParameters(sim);
+
         // 2. GEOMETRY
         GeometryPart myPart = createPartsGeneric(sim);
         if (myPart == null) return;
@@ -86,9 +89,6 @@ public class Simple_Setup extends StarMacro {
         // Force exactly 1 final iteration to populate the debugging fields
         sim.println("--- Stepping 1 final iteration for Temporary Storage ---");
         sim.getSimulationIterator().step(1);
-
-        // Turn OFF Temporary Storage to protect your RAM if you run more things later
-        //toggleTemporaryStorage(sim, false);
 
         // CREATE PLANES
         List<String> analysisPlanes = new ArrayList<>();
@@ -289,6 +289,61 @@ public class Simple_Setup extends StarMacro {
         // If not found, log a warning and return null
         sim.println("Warning: Global Parameter '" + paramName + "' was not found.");
         return null;
+    }
+
+    // ==========================================================
+    // DYNAMIC CAD GEOMETRY UPDATE (CASE-INSENSITIVE)
+    // ==========================================================
+    private void updateCADParameters(Simulation sim) {
+        sim.println("--- Updating 3D-CAD Geometry ---");
+
+        SolidModelManager solidManager = sim.get(SolidModelManager.class);
+        if (solidManager.getObjects().isEmpty()) {
+            sim.println("   -> Warning: No 3D-CAD model found. Skipping geometry update.");
+            return;
+        }
+
+        CadModel cadModel = (CadModel) solidManager.getObjects().iterator().next();
+        boolean cadUpdated = false;
+
+        // Get all Design Parameters currently set up in the CAD model
+        for (star.cadmodeler.DesignParameter param : cadModel.getDesignParameterManager().getObjects()) {
+            String cadParamName = param.getPresentationName(); // e.g., "Inlet_1_Y"
+
+            // CASE-INSENSITIVE SEARCH: Loop through our configMap
+            for (Map.Entry<String, Double> entry : configMap.entrySet()) {
+                String fileParamName = entry.getKey(); // e.g., "inlet_1_Y"
+
+                if (cadParamName.equalsIgnoreCase(fileParamName)) {
+                    double newValue = entry.getValue();
+
+                    if (param instanceof star.cadmodeler.ScalarQuantityDesignParameter) {
+                        star.cadmodeler.ScalarQuantityDesignParameter scalarParam =
+                                (star.cadmodeler.ScalarQuantityDesignParameter) param;
+
+                        // Push the new value into the CAD model
+                        scalarParam.getQuantity().setValue(newValue);
+                        sim.println("   -> Applied CAD Update: " + cadParamName + " = " + newValue);
+                        cadUpdated = true;
+                    }
+                    break; // Stop searching once we find the match
+                }
+            }
+        }
+
+        // If we changed any dimensions, tell the CAD modeler to rebuild the solid bodies
+        if (cadUpdated) {
+            sim.println("   -> Rebuilding 3D-CAD Model Geometry...");
+            try {
+                cadModel.update();
+                sim.println("   -> Success: CAD Rebuild Complete.");
+            } catch (Exception e) {
+                sim.println("   -> ERROR: CAD Rebuild Failed! (Check for impossible geometry overlaps)");
+                throw new RuntimeException("CAD Update Failed", e);
+            }
+        } else {
+            sim.println("   -> No matching CAD parameters found in input.txt.");
+        }
     }
 
     private void linkMaterialProperty(Gas gas, String propName, String paramName, Simulation sim) {
@@ -754,7 +809,9 @@ public class Simple_Setup extends StarMacro {
                 // ---------------------------------------------------------
                 // FILTER 2: ONLY Process "Param." Lines
                 // ---------------------------------------------------------
-                if (!cleanLine.startsWith("Param.")) {
+                boolean isPhysicsParam = cleanLine.startsWith("Param.");
+                boolean isCADParam = cleanLine.startsWith("CAD.");
+                if (!isPhysicsParam && !isCADParam) {
                     continue;
                 }
 
@@ -767,7 +824,13 @@ public class Simple_Setup extends StarMacro {
                     // 1. EXTRACT KEY & STRIP PREFIX
                     // "Param.Inlet_Velocity_1" -> "Inlet_Velocity_1"
                     String rawKey = parts[0].trim();
-                    String finalKey = rawKey.substring(6); // Remove first 6 chars ("Param.")
+                    String finalKey = "";
+
+                    if (isPhysicsParam) {
+                        finalKey = rawKey.substring(6); // Strips "Param."
+                    } else if (isCADParam) {
+                        finalKey = rawKey.substring(4); // Strips "CAD."
+                    }
 
                     // 2. EXTRACT VALUE & REMOVE INLINE COMMENTS
                     // "25.5 m/s # Comment" -> "25.5 m/s"
@@ -812,7 +875,9 @@ public class Simple_Setup extends StarMacro {
                         }
 
                         // 4. CREATE IN STAR-CCM+
-                        createOrUpdateParameter(sim, finalKey, val, unitStr);
+                        if (isPhysicsParam) {
+                            createOrUpdateParameter(sim, finalKey, val, unitStr);
+                        }
 
                         configMap.put(finalKey, val);
 
