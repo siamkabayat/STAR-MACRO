@@ -81,7 +81,20 @@ public class Simple_Setup extends StarMacro {
         }
 
         // RUN SOLVER
-        runSolver(sim);
+        //runSolver(sim);
+
+        sim.println("--- Fetching Solver Targets ---");
+
+        // 1. Dynamically read final max steps from the input.txt
+        ScalarGlobalParameter maxParam = getParamByName(sim, "Max_Steps");
+        int finalIterations = (maxParam != null) ? (int) maxParam.getQuantity().getSIValue() : 1000;
+
+        // 2. Define when the switch to 2nd Order happens
+        int switchIteration = 10;
+
+        // 3. Execute the pipeline
+        runStagedSolver(sim, switchIteration, finalIterations);
+
 
         // Turn ON Temporary Storage
         toggleTemporaryStorage(sim, true);
@@ -1429,4 +1442,99 @@ public class Simple_Setup extends StarMacro {
             }
         }
     }
+
+    // ==========================================================
+// STAGED SOLVER RUN (1st Order -> 2nd Order)
+// ==========================================================
+    private void runStagedSolver(Simulation sim, int switchStep, int finalStep) {
+        sim.println("--- Initializing Solution ---");
+        sim.getSolution().initializeSolution();
+
+        sim.println("--- Starting Staged Solver Execution ---");
+
+        // Grab the active physics continuum dynamically
+        PhysicsContinuum physics = (PhysicsContinuum) sim.getContinuumManager().getObjects().iterator().next();
+
+        // ==========================================================
+        // STAGE 0: FORCE 1ST ORDER
+        // ==========================================================
+        sim.println("--- STAGE 1 SETUP: Forcing active models to 1st Order ---");
+        for (star.common.Model model : physics.getModelManager().getObjects()) {
+
+            // Coupled Flow Model
+            if (model instanceof star.coupledflow.CoupledFlowModel) {
+                star.coupledflow.CoupledFlowModel coupledModel = (star.coupledflow.CoupledFlowModel) model;
+                coupledModel.getUpwindOption().setSelected(star.flow.FlowUpwindOption.Type.FIRST_ORDER);
+                sim.println("   -> Coupled Flow: Forced to 1st Order");
+            }
+            // K-Epsilon Model
+            else if (model instanceof star.keturb.KeTurbModel) {
+                star.keturb.KeTurbModel kEpsModel = (star.keturb.KeTurbModel) model;
+                kEpsModel.getUpwindOption().setSelected(star.flow.UpwindOption.Type.FIRST_ORDER);
+                sim.println("   -> K-Epsilon Model Detected: Forced to 1st Order");
+            }
+            // K-Omega Model
+            else if (model instanceof star.kwturb.KwTurbModel) {
+                star.kwturb.KwTurbModel kOmegaModel = (star.kwturb.KwTurbModel) model;
+                kOmegaModel.getUpwindOption().setSelected(star.flow.UpwindOption.Type.FIRST_ORDER);
+                sim.println("   -> K-Omega Model Detected: Forced to 1st Order");
+            }
+        }
+
+        // ==========================================================
+        // STAGE 1: RUN 1ST ORDER
+        // ==========================================================
+        StepStoppingCriterion maxStepsCriterion =
+                (StepStoppingCriterion) sim.getSolverStoppingCriterionManager().getSolverStoppingCriterion("Maximum Steps");
+
+        sim.println("--- STAGE 1 EXECUTION: Running 1st Order to iteration " + switchStep + " ---");
+        maxStepsCriterion.getMaximumNumberStepsObject().getQuantity().setValue(switchStep);
+
+        try {
+            sim.getSimulationIterator().run();
+        } catch (Exception e) {
+            sim.println("Error during Stage 1: " + e.getMessage());
+            return; // Stop execution if the initial run crashes
+        }
+
+        // ==========================================================
+        // STAGE 2 SETUP: SWITCH TO 2ND ORDER
+        // ==========================================================
+        sim.println("--- STAGE 2 SETUP: Switching active models to 2nd Order ---");
+        for (star.common.Model model : physics.getModelManager().getObjects()) {
+
+            // Coupled Flow Model
+            if (model instanceof star.coupledflow.CoupledFlowModel) {
+                star.coupledflow.CoupledFlowModel coupledModel = (star.coupledflow.CoupledFlowModel) model;
+                coupledModel.getUpwindOption().setSelected(star.flow.FlowUpwindOption.Type.SECOND_ORDER);
+                sim.println("   -> Coupled Flow: Switched to 2nd Order");
+            }
+            // K-Epsilon Model
+            else if (model instanceof star.keturb.KeTurbModel) {
+                star.keturb.KeTurbModel kEpsModel = (star.keturb.KeTurbModel) model;
+                kEpsModel.getUpwindOption().setSelected(star.flow.UpwindOption.Type.SECOND_ORDER);
+                sim.println("   -> K-Epsilon Model Detected: Switched to 2nd Order");
+            }
+            // K-Omega Model
+            else if (model instanceof star.kwturb.KwTurbModel) {
+                star.kwturb.KwTurbModel kOmegaModel = (star.kwturb.KwTurbModel) model;
+                kOmegaModel.getUpwindOption().setSelected(star.flow.UpwindOption.Type.SECOND_ORDER);
+                sim.println("   -> K-Omega Model Detected: Switched to 2nd Order");
+            }
+        }
+
+        // ==========================================================
+        // STAGE 2: RUN 2ND ORDER
+        // ==========================================================
+        sim.println("--- STAGE 2 EXECUTION: Running to final iteration " + finalStep + " ---");
+        maxStepsCriterion.getMaximumNumberStepsObject().getQuantity().setValue(finalStep);
+
+        try {
+            sim.getSimulationIterator().run();
+            sim.println("--- Solver Execution Complete ---");
+        } catch (Exception e) {
+            sim.println("Error during Stage 2: " + e.getMessage());
+        }
+    }
+
 }
