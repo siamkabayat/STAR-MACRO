@@ -16,9 +16,8 @@ import star.kwturb.*;
 import star.material.*;
 import star.meshing.*;
 import star.metrics.ThreeDimensionalModel;
-import star.prismmesher.NumPrismLayers;
-import star.prismmesher.PrismLayerStretching;
-import star.prismmesher.PrismThickness;
+import star.prismmesher.*;
+import star.resurfacer.VolumeControlResurfacerSizeOption;
 import star.turbulence.*;
 import star.coupledflow.CoupledFlowModel;
 import star.keturb.*;
@@ -70,6 +69,7 @@ public class Simple_Setup extends StarMacro {
         // Retrieve the mesh op we just created to pass it to the control
         AutoMeshOperation meshOp = (AutoMeshOperation) sim.get(MeshOperationManager.class).getObject("Automated Mesh");
         addControlToAllSurfaces(sim, meshOp, myPart);
+        addVolumetricControls(sim, meshOp);
 
         // 7. GENERATE MESH
         sim.println("--- Generating Volume Mesh ---");
@@ -743,6 +743,89 @@ public class Simple_Setup extends StarMacro {
         surfSize.getRelativeSizeScalar().setValue(50.0);
 
         sim.println("   -> Configured Custom Control: " + controlName + " (Target: 50%)");
+    }
+
+    // ==========================================================
+    // DYNAMIC VOLUMETRIC CONTROLS (SIZE & PRISMS)
+    // ==========================================================
+    private void addVolumetricControls(Simulation sim, AutoMeshOperation meshOp) {
+        sim.println("--- Scanning for Volumetric Refinement Zones ---");
+
+        CustomMeshControlManager controlManager = meshOp.getCustomMeshControls();
+
+        for (star.common.GeometryPart part : sim.getGeometryPartManager().getObjects()) {
+            String partName = part.getPresentationName();
+
+            if (partName.contains("Refinement")) {
+                sim.println("   -> Found Refinement Zone: " + partName);
+
+                // 1. Create or retrieve the Volume Control
+                VolumeCustomMeshControl volControl;
+                if (controlManager.has(partName + "_Control")) {
+                    volControl = (VolumeCustomMeshControl) controlManager.getObject(partName + "_Control");
+                } else {
+                    volControl = controlManager.createVolumeControl();
+                    volControl.setPresentationName(partName + "_Control");
+                }
+
+                // 2. Assign the Ghost Body to the control
+                volControl.getGeometryObjects().setQuery(null);
+                volControl.getGeometryObjects().setObjects(part);
+
+                // 3. Generate keys
+                String sizeKey      = partName.replace("Refinement", "Refinement_Size");
+                String numPrismKey  = partName.replace("Refinement", "Refinement_Num_Prism");
+                String thicknessKey = partName.replace("Refinement", "Refinement_Prism_Thickness");
+
+                // ===============================================================
+                // APPLY ISOTROPIC SIZE
+                // ===============================================================
+                if (configMap.containsKey(sizeKey)) {
+                    double targetSizeValue = configMap.get(sizeKey);
+
+                    volControl.getCustomConditions().get(VolumeControlResurfacerSizeOption.class)
+                            .setVolumeControlBaseSizeOption(true);
+
+                    VolumeControlSize targetSize =
+                            volControl.getCustomValues().get(VolumeControlSize.class);
+                    targetSize.getRelativeOrAbsoluteOption().setSelected(RelativeOrAbsoluteOption.Type.ABSOLUTE);
+                    ((ScalarPhysicalQuantity) targetSize.getAbsoluteSizeValue()).setValue(targetSizeValue);
+
+                    sim.println("      -> Applied Custom Mesh Size: " + targetSizeValue + " m");
+                }
+
+                // ===============================================================
+                // APPLY CUSTOM PRISM LAYERS
+                // ===============================================================
+                if (configMap.containsKey(numPrismKey) && configMap.containsKey(thicknessKey)) {
+                    double targetNumLayers = configMap.get(numPrismKey);
+                    double targetThickness = configMap.get(thicknessKey);
+
+                    VolumeControlPrismsOption prismOption =
+                            volControl.getCustomConditions().get(VolumeControlPrismsOption.class);
+                    prismOption.setCustomizeNumLayers(true);
+                    prismOption.setCustomizeTotalThickness(true);
+
+                    CustomPrismValuesManager prismManager =
+                            volControl.getCustomValues().get(CustomPrismValuesManager.class);
+
+                    // Set Number of Layers
+                    NumPrismLayers numLayers = prismManager.get(NumPrismLayers.class);
+                    numLayers.getNumLayersValue().getQuantity().setValue(targetNumLayers);
+
+                    // Set Total Thickness (Absolute)
+                    PrismThickness prismThickness = prismManager.get(PrismThickness.class);
+                    prismThickness.getRelativeOrAbsoluteOption().setSelected(RelativeOrAbsoluteOption.Type.ABSOLUTE);
+                    ((ScalarPhysicalQuantity) prismThickness.getAbsoluteSizeValue()).setValue(targetThickness);
+
+                    sim.println("      -> Applied Custom Prisms: " + (int)targetNumLayers + " layers, " + targetThickness + " m thick");
+                }
+                else if (configMap.containsKey(numPrismKey) || configMap.containsKey(thicknessKey)) {
+                    sim.println("      -> WARNING: To apply custom prisms to " + partName + ", you must provide BOTH "
+                            + numPrismKey + " AND " + thicknessKey + " in input.txt. Skipping custom prisms.");
+                }
+            }
+        }
     }
 
     // ==========================================================
