@@ -148,12 +148,12 @@ public class Simple_Setup extends StarMacro {
 
 
     // ==========================================================
-    // DYNAMIC PARAMETER CREATION
+    // DYNAMIC PARAMETER CREATION (Upgraded with Auto-Math)
     // ==========================================================
     private void createDynamicParameters(Simulation sim, GeometryPart part) {
         sim.println("--- Mapping Configuration to Geometry ---");
 
-        for (PartSurface surf : part.getPartSurfaces()) {
+        for (star.common.PartSurface surf : part.getPartSurfaces()) {
             String name = surf.getPresentationName().toLowerCase();
 
             // ----------------------------------------------------
@@ -162,55 +162,75 @@ public class Simple_Setup extends StarMacro {
             if (name.contains("inlet") && !name.contains("wall")) {
                 int id = extractIDFromName(name);
                 String key = "Inlet_Velocity_" + id;
-                String dhKey = "Inlet_Hydraulic_Diameter_" + id;
 
-                // CHECK: Do we have a pre-known value for this ID?
+                // Expected CAD keys based on the ID
+                String widthKey  = "Inlet_" + id + "_Width";
+                String heightKey = "Inlet_" + id + "_Height";
+                String dhKey     = "Inlet_Hydraulic_Diameter_" + id;
+
+                // 1. Check and Set Velocity
                 if (configMap.containsKey(key)) {
                     double userValue = configMap.get(key);
                     createOrUpdateParameter(sim, key, userValue, "m/s");
                     sim.println("   -> Matched " + surf.getPresentationName() + " with configured value: " + userValue);
                 } else {
-                    // forgot to define this ID
-                    // CRASH: Geometry exists, but Input File is missing the line!
                     sim.println("ERROR: Missing parameter for surface: " + surf.getPresentationName());
                     throw new RuntimeException("Input File Missing: " + key);
                 }
 
-                if (configMap.containsKey(dhKey)) {
-                    double val = configMap.get(dhKey);
-                    createOrUpdateParameter(sim, dhKey, val, "m");
+                // 2. AUTO-CALCULATE Hydraulic Diameter
+                if (configMap.containsKey(widthKey) && configMap.containsKey(heightKey)) {
+                    double w = configMap.get(widthKey);
+                    double h = configMap.get(heightKey);
+                    double dh = (2.0 * w * h) / (w + h); // The formula
+
+                    configMap.put(dhKey, dh); // Store in memory
+                    createOrUpdateParameter(sim, dhKey, dh, "m"); // Push to STAR-CCM+
+                    sim.println("   -> Auto-Calculated " + dhKey + ": " + dh + " m");
                 } else {
-                    // CRASH: User forgot the diameter
-                    sim.println("ERROR: Missing hydraulic diameter for: " + surf.getPresentationName());
-                    throw new RuntimeException("Input File Missing: " + dhKey);
+                    // CRASH: User forgot the CAD dimensions in input.txt!
+                    sim.println("ERROR: Missing CAD dimensions to calculate Dh for: " + surf.getPresentationName());
+                    throw new RuntimeException("Input File Missing: " + widthKey + " or " + heightKey);
                 }
 
+                // ----------------------------------------------------
+                // CASE: OUTLET
+                // ----------------------------------------------------
             } else if (name.contains("outlet") && !name.contains("wall")) {
                 int id = extractIDFromName(name);
                 String key = "Outlet_Pressure_" + id;
-                String dhKey = "Outlet_Hydraulic_Diameter_" + id;
 
+                // Expected CAD keys based on the ID
+                String widthKey  = "Outlet_" + id + "_Width";
+                String heightKey = "Outlet_" + id + "_Height";
+                String dhKey     = "Outlet_Hydraulic_Diameter_" + id;
+
+                // 1. Check and Set Pressure
                 if (configMap.containsKey(key)) {
                     double userValue = configMap.get(key);
                     createOrUpdateParameter(sim, key, userValue, "Pa");
                     sim.println("   -> Matched " + name + " with configured value: " + userValue);
                 } else {
-                    // CRASH
                     sim.println("ERROR: Missing parameter for surface: " + surf.getPresentationName());
                     throw new RuntimeException("Input File Missing: " + key);
                 }
 
-                if (configMap.containsKey(dhKey)) {
-                    double val = configMap.get(dhKey);
-                    createOrUpdateParameter(sim, dhKey, val, "m");
+                // 2. AUTO-CALCULATE Hydraulic Diameter
+                if (configMap.containsKey(widthKey) && configMap.containsKey(heightKey)) {
+                    double w = configMap.get(widthKey);
+                    double h = configMap.get(heightKey);
+                    double dh = (2.0 * w * h) / (w + h);
+
+                    configMap.put(dhKey, dh);
+                    createOrUpdateParameter(sim, dhKey, dh, "m");
+                    sim.println("   -> Auto-Calculated " + dhKey + ": " + dh + " m");
                 } else {
-                    // CRASH
-                    sim.println("ERROR: Missing hydraulic diameter for: " + surf.getPresentationName());
-                    throw new RuntimeException("Input File Missing: " + dhKey);
+                    // CRASH: User forgot the CAD dimensions in input.txt!
+                    sim.println("ERROR: Missing CAD dimensions to calculate Dh for: " + surf.getPresentationName());
+                    throw new RuntimeException("Input File Missing: " + widthKey + " or " + heightKey);
                 }
             }
         }
-
     }
 
     // HELPER: EXTRACT ID
