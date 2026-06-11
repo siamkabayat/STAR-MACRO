@@ -85,15 +85,8 @@ public class Simple_Setup extends StarMacro {
 
         sim.println("--- Fetching Solver Targets ---");
 
-        // 1. Dynamically read final max steps from the input.txt
-        ScalarGlobalParameter maxParam = getParamByName(sim, "Max_Steps");
-        int finalIterations = (maxParam != null) ? (int) maxParam.getQuantity().getSIValue() : 1000;
-
-        // 2. Define when the switch to 2nd Order happens
-        int switchIteration = 10;
-
         // 3. Execute the pipeline
-        runStagedSolver(sim, switchIteration, finalIterations);
+        runStagedSolver(sim);
 
 
         // Turn ON Temporary Storage
@@ -1547,61 +1540,94 @@ public class Simple_Setup extends StarMacro {
     }
 
     // ==========================================================
-// STAGED SOLVER RUN (1st Order -> 2nd Order)
-// ==========================================================
-    private void runStagedSolver(Simulation sim, int switchStep, int finalStep) {
-        sim.println("--- Initializing Solution ---");
-        sim.getSolution().initializeSolution();
-
+    // STAGED SOLVER EXECUTION (Smart Resume & Stabilization)
+    // ==========================================================
+    private void runStagedSolver(Simulation sim) {
         sim.println("--- Starting Staged Solver Execution ---");
 
-        // Grab the active physics continuum dynamically
+        // 1. DYNAMICALLY PULL THE CONFIGURATION CONTROLS
+        int switchIteration = 0;
+        if (configMap.containsKey("Solver_Switch_Iteration")) {
+            switchIteration = (int) Math.round(configMap.get("Solver_Switch_Iteration"));
+        }
+
+        // Check if the user wants to force an initialization (1.0 = true, 0.0 = false)
+        boolean forceInitialize = false;
+        if (configMap.containsKey("Initialize_Solution")) {
+            forceInitialize = (configMap.get("Initialize_Solution") == 1.0);
+        }
+
+        // Retrieve current iteration and grab required continuum managers
+        int currentIteration = sim.getSimulationIterator().getCurrentIteration();
         PhysicsContinuum physics = (PhysicsContinuum) sim.getContinuumManager().getObjects().iterator().next();
+        star.common.StepStoppingCriterion maxStepsCriterion =
+                (star.common.StepStoppingCriterion) sim.getSolverStoppingCriterionManager().getSolverStoppingCriterion("Maximum Steps");
+
 
         // ==========================================================
-        // STAGE 0: FORCE 1ST ORDER
+        // INITIALIZATION BLOCK (With Smart Logging)
         // ==========================================================
-        sim.println("--- STAGE 1 SETUP: Forcing active models to 1st Order ---");
-        for (star.common.Model model : physics.getModelManager().getObjects()) {
+        if (forceInitialize) {
+            // Scenario A: User asked for it
+            sim.println("--- Initializing Solution: Requested by input.txt ---");
+            sim.getSolution().initializeSolution();
 
-            // Coupled Flow Model
-            if (model instanceof star.coupledflow.CoupledFlowModel) {
-                star.coupledflow.CoupledFlowModel coupledModel = (star.coupledflow.CoupledFlowModel) model;
-                coupledModel.getUpwindOption().setSelected(star.flow.FlowUpwindOption.Type.FIRST_ORDER);
-                sim.println("   -> Coupled Flow: Forced to 1st Order");
-            }
-            // K-Epsilon Model
-            else if (model instanceof star.keturb.KeTurbModel) {
-                star.keturb.KeTurbModel kEpsModel = (star.keturb.KeTurbModel) model;
-                kEpsModel.getUpwindOption().setSelected(star.flow.UpwindOption.Type.FIRST_ORDER);
-                sim.println("   -> K-Epsilon Model Detected: Forced to 1st Order");
-            }
-            // K-Omega Model
-            else if (model instanceof star.kwturb.KwTurbModel) {
-                star.kwturb.KwTurbModel kOmegaModel = (star.kwturb.KwTurbModel) model;
-                kOmegaModel.getUpwindOption().setSelected(star.flow.UpwindOption.Type.FIRST_ORDER);
-                sim.println("   -> K-Omega Model Detected: Forced to 1st Order");
-            }
+        } else if (currentIteration == 0) {
+            // Scenario B: User said 0, but the simulation is completely empty
+            sim.println("--- Initializing Solution: AUTO-OVERRIDE ---");
+            sim.println("   -> Note: 'Initialize_Solution' is 0, but simulation is at iteration 0.");
+            sim.println("   -> STAR-CCM+ requires initialization to begin a fresh run.");
+            sim.getSolution().initializeSolution();
+
+        } else {
+            // Scenario C: User said 0, and data exists to resume from
+            sim.println("--- Skipping Initialization: Resuming existing flow field at iteration " + currentIteration + " ---");
         }
 
-        // ==========================================================
-        // STAGE 1: RUN 1ST ORDER
-        // ==========================================================
-        StepStoppingCriterion maxStepsCriterion =
-                (StepStoppingCriterion) sim.getSolverStoppingCriterionManager().getSolverStoppingCriterion("Maximum Steps");
 
-        sim.println("--- STAGE 1 EXECUTION: Running 1st Order to iteration " + switchStep + " ---");
-        maxStepsCriterion.getMaximumNumberStepsObject().getQuantity().setValue(switchStep);
+        // ==========================================================
+        // STAGE 1: RUN 1ST ORDER (Stabilization Phase)
+        // ==========================================================
+        if (switchIteration > 0) {
+            sim.println("--- STAGE 1 SETUP: Forcing active models to 1st Order ---");
+            for (star.common.Model model : physics.getModelManager().getObjects()) {
 
-        try {
-            sim.getSimulationIterator().run();
-        } catch (Exception e) {
-            sim.println("Error during Stage 1: " + e.getMessage());
-            return; // Stop execution if the initial run crashes
+                // Coupled Flow Model
+                if (model instanceof star.coupledflow.CoupledFlowModel) {
+                    star.coupledflow.CoupledFlowModel coupledModel = (star.coupledflow.CoupledFlowModel) model;
+                    coupledModel.getUpwindOption().setSelected(star.flow.FlowUpwindOption.Type.FIRST_ORDER);
+                    sim.println("   -> Coupled Flow: Forced to 1st Order");
+                }
+                // K-Epsilon Model
+                else if (model instanceof star.keturb.KeTurbModel) {
+                    star.keturb.KeTurbModel kEpsModel = (star.keturb.KeTurbModel) model;
+                    kEpsModel.getUpwindOption().setSelected(star.flow.UpwindOption.Type.FIRST_ORDER);
+                    sim.println("   -> K-Epsilon Model Detected: Forced to 1st Order");
+                }
+                // K-Omega Model
+                else if (model instanceof star.kwturb.KwTurbModel) {
+                    star.kwturb.KwTurbModel kOmegaModel = (star.kwturb.KwTurbModel) model;
+                    kOmegaModel.getUpwindOption().setSelected(star.flow.UpwindOption.Type.FIRST_ORDER);
+                    sim.println("   -> K-Omega Model Detected: Forced to 1st Order");
+                }
+            }
+
+            sim.println("--- STAGE 1 EXECUTION: Running 1st Order to iteration " + switchIteration + " ---");
+            maxStepsCriterion.getMaximumNumberStepsObject().getQuantity().setValue(switchIteration);
+
+            try {
+                sim.getSimulationIterator().run();
+            } catch (Exception e) {
+                sim.println("Error during Stage 1: " + e.getMessage());
+                return; // Stop execution entirely if the initial run crashes
+            }
+        } else {
+            sim.println("--- STAGE 1 SETUP: Switch Iteration is 0 or missing from input.txt. Skipping 1st-Order stabilization.");
         }
 
+
         // ==========================================================
-        // STAGE 2 SETUP: SWITCH TO 2ND ORDER
+        // STAGE 2 SETUP: SWITCH TO 2ND ORDER (High Accuracy Phase)
         // ==========================================================
         sim.println("--- STAGE 2 SETUP: Switching active models to 2nd Order ---");
         for (star.common.Model model : physics.getModelManager().getObjects()) {
@@ -1626,11 +1652,17 @@ public class Simple_Setup extends StarMacro {
             }
         }
 
+
         // ==========================================================
         // STAGE 2: RUN 2ND ORDER
         // ==========================================================
-        sim.println("--- STAGE 2 EXECUTION: Running to final iteration " + finalStep + " ---");
-        maxStepsCriterion.getMaximumNumberStepsObject().getQuantity().setValue(finalStep);
+        int maxSteps = 500; // Default fallback for safety
+        if (configMap.containsKey("Max_Steps")) {
+            maxSteps = (int) Math.round(configMap.get("Max_Steps"));
+        }
+
+        sim.println("--- STAGE 2 EXECUTION: Running to final iteration " + maxSteps + " ---");
+        maxStepsCriterion.getMaximumNumberStepsObject().getQuantity().setValue(maxSteps);
 
         try {
             sim.getSimulationIterator().run();
