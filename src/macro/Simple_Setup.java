@@ -1369,6 +1369,32 @@ public class Simple_Setup extends StarMacro {
             totalReport.createMonitor();
             sim.println("   -> Success! Monitor created for " + totalReportName);
         }
+
+        // ==========================================================
+        // EXPORT TO FILE IMMEDIATELY
+        // ==========================================================
+        try {
+            // 1. Evaluate the report using the fully converged flow field
+            double finalIndex = totalReport.getReportMonitorValue();
+            sim.println("   -> Calculated Total Performance report: " + finalIndex);
+
+            // 2. Set up the file in the exact directory as the .sim file
+            java.io.File outputFile = new java.io.File(sim.getSessionDir(), "result.out");
+
+            // 3. Open writer in APPEND mode (true) so it doesn't delete previous planes
+            java.io.FileWriter fw = new java.io.FileWriter(outputFile, false);
+            java.io.PrintWriter pw = new java.io.PrintWriter(fw);
+
+            // 4. Write the data cleanly and close
+            pw.println(finalIndex);
+            pw.close();
+
+            sim.println("   -> Successfully written result to: " + outputFile.getName());
+
+        } catch (Exception e) {
+            sim.println("   -> ERROR: Could not evaluate report or write to file.");
+            sim.println("   -> " + e.getMessage());
+        }
     }
 
     // ==========================================================
