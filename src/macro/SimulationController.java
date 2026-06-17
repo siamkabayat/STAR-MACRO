@@ -22,7 +22,7 @@ import star.coupledflow.CoupledFlowModel;
 import star.keturb.*;
 import star.vis.*;
 
-public class Simple_Setup extends StarMacro {
+public class SimulationController extends StarMacro {
 
     // Global Map to store your "Pre-Known" values
     private Map<String, Double> configMap = new HashMap<>();
