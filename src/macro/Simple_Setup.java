@@ -38,7 +38,7 @@ public class Simple_Setup extends StarMacro {
 
 
         // 1. PARAMETERS
-        createGlobalParameters(sim);
+        loadConfigurationParameters(sim);
 
         // 1.1 GEOMETRY MODIFICATION (This updates the CAD and rebuilds it)
         updateCADParameters(sim);
@@ -232,17 +232,6 @@ public class Simple_Setup extends StarMacro {
         return digit.isEmpty() ? 1 : Integer.parseInt(digit);
     }
 
-    // ----------------------------------------------------------
-    // HELPER: PARAMETER
-    // ----------------------------------------------------------
-    private void createGlobalParameters(Simulation sim) {
-
-        // Call the file reader FIRST
-        readAndCreateParameters(sim);
-
-        //TODO: This must be extracted  from inlet geometry
-        //createOrGetParameter(sim, "Hydraulic_Diameter", 0.08, "m");
-    }
 
     private void createOrUpdateParameter(Simulation sim, String name, double value, String unitString) {
         GlobalParameterManager gpm = sim.get(GlobalParameterManager.class);
@@ -894,10 +883,10 @@ public class Simple_Setup extends StarMacro {
     }
 
     // ==========================================================
-    // 1. READ PARAMETERS (STRICT NAMESPACE: "Param.")
+    // 1. READ PARAMETERS (NAMESPACES: Config., Param., CAD.)
     // ==========================================================
-    private void readAndCreateParameters(Simulation sim) {
-        sim.println("--- Reading Input File (Namespace: Param.) ---");
+    private void loadConfigurationParameters(Simulation sim) {
+        sim.println("--- Reading Input File ---");
 
         File file = new File(sim.getSessionDir(), "input.txt");
         if (!file.exists()) {
@@ -916,11 +905,13 @@ public class Simple_Setup extends StarMacro {
                 if (cleanLine.isEmpty() || cleanLine.startsWith("#")) continue;
 
                 // ---------------------------------------------------------
-                // FILTER 2: ONLY Process "Param." Lines
+                // FILTER 2: ONLY Process Valid Namespaces
                 // ---------------------------------------------------------
                 boolean isPhysicsParam = cleanLine.startsWith("Param.");
-                boolean isCADParam = cleanLine.startsWith("CAD.");
-                if (!isPhysicsParam && !isCADParam) {
+                boolean isCADParam     = cleanLine.startsWith("CAD.");
+                boolean isConfig       = cleanLine.startsWith("Config.");
+
+                if (!isPhysicsParam && !isCADParam && !isConfig) {
                     continue;
                 }
 
@@ -931,7 +922,6 @@ public class Simple_Setup extends StarMacro {
                 if (parts.length == 2) {
 
                     // 1. EXTRACT KEY & STRIP PREFIX
-                    // "Param.Inlet_Velocity_1" -> "Inlet_Velocity_1"
                     String rawKey = parts[0].trim();
                     String finalKey = "";
 
@@ -939,60 +929,51 @@ public class Simple_Setup extends StarMacro {
                         finalKey = rawKey.substring(6); // Strips "Param."
                     } else if (isCADParam) {
                         finalKey = rawKey.substring(4); // Strips "CAD."
+                    } else if (isConfig) {
+                        finalKey = rawKey.substring(7); // Strips "Config."
                     }
 
                     // 2. EXTRACT VALUE & REMOVE INLINE COMMENTS
-                    // "25.5 m/s # Comment" -> "25.5 m/s"
                     String valuePart = parts[1].split("#")[0].trim();
 
-
-                    // STRICT STRING PARAMETER VALIDATION
+                    // 3. STRICT STRING VALIDATION (For Config.Turbulence_Model)
                     if (finalKey.equalsIgnoreCase("Turbulence_Model")) {
-                        String parsedModel =  valuePart.toLowerCase().trim();
+                        String parsedModel = valuePart.toLowerCase();
 
                         if (parsedModel.equals("k-epsilon") || parsedModel.equals("k-omega-sst")) {
                             turbulenceModel = parsedModel;
                             sim.println("   -> Configured Turbulence Model: " + turbulenceModel);
                         } else {
-                            sim.println("   -> WARNING: Unknown Turbulence_Model '" + parsedModel + "'.");
-                            sim.println("      Allowed options are 'k-epsilon' or 'k-omega-sst'.");
-                            sim.println("      Defaulting to 'k-epsilon' to prevent solver crash.");
+                            sim.println("   -> WARNING: Unknown Turbulence_Model '" + parsedModel + "'. Defaulting to 'k-epsilon'.");
                             turbulenceModel = "k-epsilon";
                         }
                         continue; // Skip the Double parsing logic
                     }
 
                     try {
-                        // 3. SEPARATE VALUE AND UNIT
-                        // Logic: The last chunk after the last space is likely the unit.
-                        // Example: "25.5 m/s" -> Val="25.5", Unit="m/s"
-                        // Example: "0.05"     -> Val="0.05", Unit=""
-
-                        String[] valTokens = valuePart.split("\\s+"); // Split by whitespace
+                        // 4. SEPARATE VALUE AND UNIT (For Numbers)
+                        String[] valTokens = valuePart.split("\\s+");
                         double val;
                         String unitStr = "";
 
                         if (valTokens.length >= 2) {
-                            // Assumes format "Value Unit"
-                            unitStr = valTokens[valTokens.length - 1]; // Last part is unit
-                            // Join the rest back together (in case value has spaces, rare)
+                            unitStr = valTokens[valTokens.length - 1];
                             String valStr = valuePart.substring(0, valuePart.lastIndexOf(unitStr)).trim();
                             val = Double.parseDouble(valStr);
                         } else {
-                            // Dimensionless scalar
                             val = Double.parseDouble(valuePart);
                         }
 
-                        // 4. CREATE IN STAR-CCM+
+                        // 5. INJECT INTO STAR-CCM+ (ONLY for Physics Parameters)
                         if (isPhysicsParam) {
                             createOrUpdateParameter(sim, finalKey, val, unitStr);
                         }
 
+                        // 6. SAVE EVERYTHING TO JAVA MEMORY (So macro controls can use them)
                         configMap.put(finalKey, val);
 
                     } catch (Exception e) {
                         sim.println("   Warning: Could not parse line: " + cleanLine);
-                        sim.println("   Reason: " + e.getMessage());
                     }
                 }
             }
