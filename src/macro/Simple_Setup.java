@@ -4,7 +4,6 @@ import java.io.*;
 import java.util.*;
 
 import star.base.neo.DoubleVector;
-import star.base.neo.FJTask;
 import star.base.neo.NamedObject;
 import star.base.neo.StringVector;
 import star.base.report.*;
@@ -544,7 +543,7 @@ public class Simple_Setup extends StarMacro {
 
                 // Safety check: verify we actually found them
                 if (velParam != null) {
-                    configureInlet(sim, b, velParam, globalTurb, dhParam);
+                    configureInlet(b, velParam, globalTurb, dhParam);
                     sim.println("   -> Configured " + b.getPresentationName() + " using " + velName);
                 } else {
                     sim.println("   ERROR: Could not find parameter " + velName + " for boundary " + b.getPresentationName());
@@ -564,7 +563,7 @@ public class Simple_Setup extends StarMacro {
                 //ScalarGlobalParameter dhParam = (ScalarGlobalParameter) sim.get(GlobalParameterManager.class).getObject("Hydraulic_Diameter");
 
                 if (pressParam != null) {
-                    configureOutlet(sim, b, pressParam, globalTurb, dhParam);
+                    configureOutlet(b, pressParam, globalTurb, dhParam);
                     sim.println("   -> Configured " + b.getPresentationName() + " using " + pressName);
                 } else {
                     sim.println("   ERROR: Could not find parameter " + pressName + " for boundary " + b.getPresentationName());
@@ -579,7 +578,7 @@ public class Simple_Setup extends StarMacro {
     // ==========================================================
     // CONFIGURE INLET HELPER
     // ==========================================================
-    private void configureInlet(Simulation sim, Boundary boundary, ScalarGlobalParameter velocityParam,
+    private void configureInlet(Boundary boundary, ScalarGlobalParameter velocityParam,
                                 ScalarGlobalParameter turbParam, ScalarGlobalParameter dhParam) {
         if (!(boundary.getBoundaryType().getClass().equals(InletBoundary.class))) {
             boundary.setBoundaryType(InletBoundary.class);
@@ -616,7 +615,7 @@ public class Simple_Setup extends StarMacro {
     // ==========================================================
     // CONFIGURE OUTLET HELPER
     // ==========================================================
-    private void configureOutlet(Simulation sim, Boundary boundary, ScalarGlobalParameter pressureParam,
+    private void configureOutlet(Boundary boundary, ScalarGlobalParameter pressureParam,
                                  ScalarGlobalParameter turbParam, ScalarGlobalParameter dhParam) {
         if (!boundary.getBoundaryType().getClass().equals(PressureBoundary.class)) {
             boundary.setBoundaryType(PressureBoundary.class);
