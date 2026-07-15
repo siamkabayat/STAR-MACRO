@@ -35,87 +35,32 @@ public class SimulationController extends StarMacro {
         Simulation sim = getActiveSimulation();
         sim.println("--- Starting Automation ---");
 
-
-        // 1. PARAMETERS
+        // 1. PARAMETERS & GEOMETRY
         loadConfigurationParameters(sim);
-
-        // 1.1 GEOMETRY MODIFICATION (This updates the CAD and rebuilds it)
         updateCADParameters(sim);
-
-        // 2. GEOMETRY
         GeometryPart myPart = createPartsGeneric(sim);
         if (myPart == null) return;
-
-        // SCAN GEOMETRY & CREATE BOUNDARY PARAMETERS
         createDynamicParameters(sim, myPart);
 
-        // 3. PHYSICS & MATERIALS
+        // 2. PHYSICS & BOUNDARIES
         setupPhysicsAndMaterials(sim);
-
-        // INITIAL CONDITIONS
         setupInitialConditions(sim);
-
-        // 4. REGION & BOUNDARIES
         setupRegionAndBoundaries(sim, myPart);
-
-        // SOLVER SETUP
         setupSolverSettings(sim);
 
-        // 5. EXECUTE MESHING PIPELINE
+        // 3. MESHING
         boolean meshSuccess = executeMeshingPipeline(sim, myPart);
-        if (!meshSuccess) return; // Safely aborts the macro if meshing failed
+        if (!meshSuccess) return;
 
-        // 3. Execute the pipeline
+        // 4. SOLVER
         runStagedSolver(sim);
-
-
-        // Turn ON Temporary Storage
         toggleTemporaryStorage(sim, true);
-
-        // Force exactly 1 final iteration to populate the debugging fields
         sim.println("--- Stepping 1 final iteration for Temporary Storage ---");
         sim.getSimulationIterator().step(1);
 
-        // CREATE PLANES
-        List<String> analysisPlanes = new ArrayList<>();
+        // 5. POST-PROCESSING
+        executePostProcessingPipeline(sim);
 
-        try {
-            analysisPlanes = setupSectionPlanes(sim);
-        } catch (FileNotFoundException e) {
-            sim.println("Warning: Could not create planes (File not found).");
-        }
-
-        // create uniformity index
-        // Loop through every plane created from the input.txt file
-        if (analysisPlanes.isEmpty()) {
-            sim.println("--- No planes defined in input.txt. Skipping uniformity reports. ---");
-        } else {
-            for (String currentPlane : analysisPlanes) {
-                sim.println("--- Generating Indices for Plane: " + currentPlane + " ---");
-
-                createVelocityUniformityReport(sim, currentPlane);
-                createUniformityPenaltyScene(sim, currentPlane, 4.0);
-
-                String deadCondition = "(mag($$Velocity) < 0.5 || $$Velocity[0] < 0.0) ? 1.0 : 0.0";
-                createCustomAreaReport(sim, currentPlane, "DeadAreaFraction", deadCondition);
-                createMetricScene(sim, currentPlane, "DeadAreaFraction", "DeadAreaFraction_Func_" + currentPlane, 0.0, 1.0);
-
-                String highVelCondition = "mag($$Velocity) > 4.0 ? 1.0 : 0.0";
-                createCustomAreaReport(sim, currentPlane, "HighVelocityArea", highVelCondition);
-                createMetricScene(sim, currentPlane, "High Velocity", "HighVelocityArea_Func_" + currentPlane, 0.0 , 1.0);
-
-                String safeZoneCondition = "($$Velocity[0] > 1.0) && ($$Velocity[0] < 4.0) ? 1.0 : 0.0";
-                createCustomAreaReport(sim, currentPlane, "SafeVelocityZone", safeZoneCondition);
-                createMetricScene(sim, currentPlane, "Safe Zone", "SafeVelocityZone_Func_" + currentPlane, 0.0, 1.0);
-
-                createDeltaZIndexReport(sim, currentPlane);
-                createMetricScene(sim, currentPlane, "Vertical Velocity", "AbsZVel_" + currentPlane, 0.0, 1.0);
-                //createDeltaZPenaltyScene(sim, currentPlane);
-
-                createTotalPerformanceIndex(sim, currentPlane, 0.30, 0.30, 0.15, 0.15, 0.10);
-            }
-        }
-        
         sim.println("--- Automation Complete ---");
     }
 
@@ -837,6 +782,53 @@ public class SimulationController extends StarMacro {
         } catch (Exception e) {
             sim.println("   -> ERROR: Mesh generation failed. " + e.getMessage());
             return false; // Tells the master loop to stop
+        }
+    }
+
+    // ==========================================================
+    // POST-PROCESSING & REPORTING PIPELINE
+    // ==========================================================
+    private void executePostProcessingPipeline(Simulation sim) {
+        sim.println("--- Starting Post-Processing Pipeline ---");
+
+        // 1. Create Planes
+        List<String> analysisPlanes = new ArrayList<>();
+        try {
+            analysisPlanes = setupSectionPlanes(sim);
+        } catch (FileNotFoundException e) {
+            sim.println("Warning: Could not create planes (input.txt not found). Skipping post-processing.");
+            return;
+        }
+
+        // 2. Verify Planes Exist
+        if (analysisPlanes.isEmpty()) {
+            sim.println("--- No planes defined in input.txt. Skipping uniformity reports. ---");
+            return;
+        }
+
+        // 3. Generate Metrics for Each Plane
+        for (String currentPlane : analysisPlanes) {
+            sim.println("--- Generating Indices for Plane: " + currentPlane + " ---");
+
+            createVelocityUniformityReport(sim, currentPlane);
+            createUniformityPenaltyScene(sim, currentPlane, 4.0);
+
+            String deadCondition = "(mag($$Velocity) < 0.5 || $$Velocity[0] < 0.0) ? 1.0 : 0.0";
+            createCustomAreaReport(sim, currentPlane, "DeadAreaFraction", deadCondition);
+            createMetricScene(sim, currentPlane, "DeadAreaFraction", "DeadAreaFraction_Func_" + currentPlane, 0.0, 1.0);
+
+            String highVelCondition = "mag($$Velocity) > 4.0 ? 1.0 : 0.0";
+            createCustomAreaReport(sim, currentPlane, "HighVelocityArea", highVelCondition);
+            createMetricScene(sim, currentPlane, "High Velocity", "HighVelocityArea_Func_" + currentPlane, 0.0 , 1.0);
+
+            String safeZoneCondition = "($$Velocity[0] > 1.0) && ($$Velocity[0] < 4.0) ? 1.0 : 0.0";
+            createCustomAreaReport(sim, currentPlane, "SafeVelocityZone", safeZoneCondition);
+            createMetricScene(sim, currentPlane, "Safe Zone", "SafeVelocityZone_Func_" + currentPlane, 0.0, 1.0);
+
+            createDeltaZIndexReport(sim, currentPlane);
+            createMetricScene(sim, currentPlane, "Vertical Velocity", "AbsZVel_" + currentPlane, 0.0, 1.0);
+
+            createTotalPerformanceIndex(sim, currentPlane, 0.30, 0.30, 0.15, 0.15, 0.10);
         }
     }
 
