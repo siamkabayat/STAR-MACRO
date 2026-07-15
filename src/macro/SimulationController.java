@@ -61,28 +61,9 @@ public class SimulationController extends StarMacro {
         // SOLVER SETUP
         setupSolverSettings(sim);
 
-        // 5. MESH SETUP
-        setupMesh(sim, myPart);
-
-        // 6. CUSTOM CONTROLS
-        // Retrieve the mesh op we just created to pass it to the control
-        AutoMeshOperation meshOp = (AutoMeshOperation) sim.get(MeshOperationManager.class).getObject("Automated Mesh");
-        addControlToAllSurfaces(sim, meshOp, myPart);
-        addVolumetricControls(sim, meshOp);
-
-        // 7. GENERATE MESH
-        sim.println("--- Generating Volume Mesh ---");
-        try {
-            sim.getMeshPipelineController().generateVolumeMesh();
-        } catch (Exception e) {
-            sim.println("Mesh generation failed. stopping.");
-            return;
-        }
-
-        // RUN SOLVER
-        //runSolver(sim);
-
-        sim.println("--- Fetching Solver Targets ---");
+        // 5. EXECUTE MESHING PIPELINE
+        boolean meshSuccess = executeMeshingPipeline(sim, myPart);
+        if (!meshSuccess) return; // Safely aborts the macro if meshing failed
 
         // 3. Execute the pipeline
         runStagedSolver(sim);
@@ -826,6 +807,36 @@ public class SimulationController extends StarMacro {
                             + numPrismKey + " AND " + thicknessKey + " in input.txt. Skipping custom prisms.");
                 }
             }
+        }
+    }
+
+    // ==========================================================
+    // MESH GENERATION PIPELINE
+    // ==========================================================
+    private boolean executeMeshingPipeline(Simulation sim, GeometryPart part) {
+        // 1. Setup Base Mesh
+        setupMesh(sim, part);
+
+        // 2. Retrieve Mesh Operation
+        AutoMeshOperation meshOp = (AutoMeshOperation) sim.get(MeshOperationManager.class).getObject("Automated Mesh");
+        if (meshOp == null) {
+            sim.println("   -> ERROR: Automated Mesh operation not found. Aborting.");
+            return false;
+        }
+
+        // 3. Apply Controls
+        addControlToAllSurfaces(sim, meshOp, part);
+        addVolumetricControls(sim, meshOp);
+
+        // 4. Generate Mesh
+        sim.println("--- Generating Volume Mesh ---");
+        try {
+            sim.getMeshPipelineController().generateVolumeMesh();
+            sim.println("   -> Success: Volume Mesh generated.");
+            return true;
+        } catch (Exception e) {
+            sim.println("   -> ERROR: Mesh generation failed. " + e.getMessage());
+            return false; // Tells the master loop to stop
         }
     }
 
